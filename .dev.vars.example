@@ -1,0 +1,9 @@
+# Copy to .dev.vars for localhost development. Never commit .dev.vars.
+# Use values from your own Google OAuth client; these public values override vars.
+GOOGLE_CLIENT_ID=YOUR_GOOGLE_CLIENT_ID.apps.googleusercontent.com
+ADMIN_EMAIL=admin@example.com
+# Supply the actual client secret locally, or use wrangler secret put in production.
+GOOGLE_CLIENT_SECRET=
+# Generate your own 32-byte encryption key as 64 hexadecimal characters.
+# Never change this key while retaining encrypted tokens in the same database.
+CALENDAR_TOKEN_KEY=

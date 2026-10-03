@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Roomly — 會議室預約</title>
+  <link rel="manifest" href="/roomly/manifest.webmanifest">
+  <meta name="theme-color" content="#1b3335">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Roomly">
+  <link rel="apple-touch-icon" href="/roomly/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="tablet.css">
+  <link rel="stylesheet" href="access.css">
+  <link rel="stylesheet" href="pwa.css">
+  <script src="pwa.js" defer></script>
+</head>
+<body data-page="board">
+<aside class="sidebar">
+  <a class="brand" href="#"><span class="brand-mark">r.</span>roomly<span class="brand-dot">●</span></a>
+  <div class="workspace"><span class="workspace-icon">W</span><div>我的工作空間<small>會議與空間管理</small></div></div>
+  <p class="nav-label">工作空間</p>
+  <nav aria-label="主要導覽">
+    <button class="nav-item active" data-view="overview"><span>▦</span>時間表</button>
+
+    <button class="nav-item" data-view="import"><span>⚙</span>設定</button>
+    <a id="admin-link" class="nav-admin-link" href="admin.html" hidden>白名單管理</a>
+  </nav>
+  <div class="access-controls"><button id="sign-out" type="button">登出</button></div>
+  <div class="sidebar-bottom"><span class="connection-dot"></span>本機資料<small>資料僅儲存在此瀏覽器</small></div>
+</aside>
+<div class="app">
+  <header><span>工作空間 <span class="crumb">/</span> <strong id="breadcrumb">預約總覽</strong></span><div class="header-right"><span class="demo-label">本機資料</span><span class="avatar">我</span></div></header>
+  <main>
+    <section id="overview" class="view">
+      <div class="tablet-heading"><div><h1 id="room-name">主會議室</h1><p id="week-label"></p></div><button class="primary" id="new-booking">＋ 預約</button></div>
+      <div class="google-entry"><div class="notice" role="status">日曆變更時自動同步，每 10 分鐘補查</div><div class="google-entry-actions"><button id="pwa-install" type="button" hidden>安裝 App</button><button class="primary" id="google-start">同步</button></div></div>
+      <form id="location-filter" class="location-filter" novalidate hidden><label for="room-location">共用會議室地點</label><div class="location-controls"><input id="room-location" class="google-input" type="text" required maxlength="100" placeholder="輸入邀請的地點文字" autocomplete="off" aria-describedby="location-status" disabled><button id="location-apply" class="primary" type="submit" disabled>新增地點</button></div><p id="location-status" class="small muted" role="status">正在載入地點設定…</p></form>
+      <details id="shared-calendars" class="shared-calendars" hidden><summary id="shared-summary">已登入帳號</summary><p id="shared-calendar-status" class="small muted" role="status">每位通過白名單的已登入帳號，都會成為共用看板的來源。</p><button id="refresh-sources" class="quiet outlined" type="button">更新來源狀態</button><div id="shared-calendar-list"></div></details>
+      <div class="tablet-toolbar">
+        <div class="date-controls"><button class="icon-button" id="prev-date" aria-label="前五天">‹</button><button class="quiet" id="today">今天</button><button class="icon-button" id="next-date" aria-label="後五天">›</button><input type="date" id="day" aria-label="選擇起始日期" aria-describedby="holiday-scope"><button id="board-fullscreen" class="quiet fullscreen-button" type="button" aria-label="全螢幕預覽" aria-pressed="false">全螢幕</button><div class="date-options" role="group" aria-label="略過日期"><label class="weekend-option"><input type="checkbox" id="skip-weekends">跳過六日</label><label class="holiday-option"><input type="checkbox" id="skip-holidays" aria-describedby="holiday-scope">跳過國定假日</label><span id="holiday-scope" class="date-holiday-note">台灣國定假日／補假 · 2026–2027</span></div></div>
+        <div class="timeline-actions"><div class="range-switch" role="group" aria-label="顯示時段"><button id="follow-now" class="active" aria-pressed="true">現在 <small id="now-clock"></small></button><button data-range="morning" aria-pressed="false">上午 <small>09–12</small></button><button data-range="afternoon" aria-pressed="false">下午 <small>12–19</small></button><button data-range="day" aria-pressed="false">全日 <small>09–19</small></button></div></div>
+      </div>
+      <section class="schedule"><div class="touch-hint"><span>點圓圈看姓名 · 點會議看詳細</span><span>每格 30 分鐘 <span id="meeting-count"></span></span></div><div id="gantt-scroll" class="gantt-scroll" role="region" aria-label="五天會議甘特圖，可上下及左右滑動" tabindex="0"><div id="gantt"></div></div><div class="gantt-caption"><span id="hours-state" role="status"></span><span id="gantt-note"></span></div></section>
+    </section>
+    <section id="people" class="view" hidden><div class="page-heading"><div><p class="eyebrow">PEOPLE & SPACES</p><h1>使用名單</h1><p class="muted">依選定日期彙整主辦人與參與者。</p></div></div><div class="notice">此頁是會議參與名單；目前尚未實作登入、使用資格審核與權限控管。</div><div class="people-grid" id="people-list"></div></section>
+    <section id="import" class="view" hidden>
+      <div class="page-heading"><h1>設定</h1></div>
+      <div class="settings-account"><div><span class="small muted">目前登入帳號</span><strong id="current-account">正在載入…</strong><span id="account-role" class="small muted"></span></div><a id="settings-admin-link" href="admin.html" hidden>白名單管理</a></div>
+      <div class="import-grid"><article id="calendar-settings" class="panel"><h2>我的日曆授權</h2><p class="muted">正在載入日曆設定…</p></article></div>
+    </section>
+  </main>
+</div>
+<dialog id="booking-dialog"><form id="booking-form"><div class="dialog-heading"><div><p class="eyebrow">A SPACE FOR YOUR NEXT IDEA</p><h2>新增會議預約</h2></div><button type="button" class="icon-button close-dialog" aria-label="關閉">×</button></div><p class="muted small">每日開放 09:00–19:00。預約儲存於此瀏覽器，時段不可重疊。</p><label>會議名稱<input name="title" required maxlength="100" placeholder="例如：產品設計討論"></label><div class="form-row"><label>會議室<select name="room" required></select></label><label>日期<input name="date" type="date" required></label></div><div class="form-row"><label>開始時間<input name="start" type="time" min="09:00" max="19:00" required value="10:00"></label><label>結束時間<input name="end" type="time" min="09:00" max="19:00" required value="11:00"></label></div><label>主辦人<input name="organizer" required maxlength="80" placeholder="姓名或 Email"></label><label>參與者<textarea name="attendees" rows="2" maxlength="2000" placeholder="以逗號、分號或換行分隔姓名 / Email"></textarea></label><label>Google Meet 連結 <span class="muted">（選填）</span><input name="meet" type="url" placeholder="https://meet.google.com/xxx-xxxx-xxx"></label><p id="form-error" class="error" role="alert"></p><div class="dialog-actions"><button type="button" class="quiet close-dialog">取消</button><button class="primary" type="submit">建立預約</button></div></form></dialog>
+<dialog id="detail-dialog"><div class="sheet-top"><button id="back-to-day" class="quiet" hidden>‹ 當日會議</button><button class="quiet close-detail" aria-label="關閉會議視窗">關閉 ✕</button></div><div id="detail"></div></dialog>
+<div id="person-popover" popover="auto" role="dialog" aria-label="參與者姓名"><div><small>參與者</small><strong id="person-name"></strong></div><button type="button" popovertarget="person-popover" popovertargetaction="hide" aria-label="關閉姓名">×</button></div>
+<div id="toast" role="status" hidden></div>
+<script src="holidays.js"></script>
+<script src="core.js"></script>
+<script src="access.js"></script>
+<script src="app.js"></script>
+<script src="fullscreen.js"></script>
+<script src="config.js"></script>
+<script src="google.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+</body></html>

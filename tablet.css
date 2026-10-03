@@ -1,0 +1,260 @@
+/* Touch-first layout: the calendar takes priority over dashboard summaries. */
+.google-entry:has(+.location-filter:not([hidden])){margin-bottom:8px}
+.google-entry #google-start{min-width:88px;min-height:48px;font-size:16px;font-weight:600}
+.google-entry-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.google-entry #google-authorize{min-height:48px;font-size:16px}
+.shared-calendars{margin:0 0 10px;background:#fff;border:1px solid #dce4d5;border-radius:10px;padding:0 12px}.shared-calendars[hidden]{display:none}.shared-calendars summary{cursor:pointer;min-height:48px;padding:12px 0;font-size:15px;font-weight:600}.shared-calendars form{display:grid;grid-template-columns:auto minmax(0,1fr);gap:12px;align-items:center}.shared-calendars label{font-size:14px;font-weight:600}.shared-calendars p{line-height:1.7;margin:8px 0;font-size:12px}.shared-calendar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:8px 0;border-top:1px solid #e5ebdf}.shared-calendar strong{display:block;font-size:14px;overflow-wrap:anywhere}.shared-calendar small{display:block;font-size:12px;line-height:1.7;color:#6a7a69}.shared-calendar button{flex:none;min-height:48px;padding:8px 14px}.shared-calendar[data-state="error"] small{color:#a14935}@media(max-width:600px){.shared-calendars form{grid-template-columns:1fr}.shared-calendar{align-items:flex-start}}
+.location-filter{margin:0 0 8px;padding:6px 12px;background:#fff;border:1px solid #dce4d5;border-radius:10px;display:grid;grid-template-columns:auto minmax(0,1fr);align-items:center;gap:6px 14px}.location-filter[hidden]{display:none}.location-filter label{font-weight:600;font-size:15px}.location-controls{display:flex;gap:8px}.location-controls input{min-width:0;width:100%;margin:0;min-height:48px}.location-controls input:disabled{background:#f1f4ef;color:#637468;opacity:1}.location-controls button{flex:none}.location-filter p{grid-column:1/-1;margin:0;font-size:13px;line-height:1.6;overflow-wrap:anywhere}.location-filter p[hidden]{display:none}.location-filter p[data-state="error"]{color:#a14935}.location-filter p[data-state="success"]{color:#406d59}@media(max-width:600px){.location-filter{grid-template-columns:1fr}}
+.settings-account{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:16px;margin-bottom:16px;border:1px solid #dce4d5;border-radius:10px;background:#fff}.settings-account strong,.settings-account span{display:block;overflow-wrap:anywhere}.settings-account strong{margin:5px 0;font-size:16px}.settings-account a{display:inline-flex;align-items:center;justify-content:center;min-height:48px;flex:none;padding:10px 16px;border:1px solid #cbd8c4;border-radius:8px;text-decoration:none;font-size:16px}.settings-account a[hidden]{display:none}#import .import-grid{grid-template-columns:minmax(0,1fr);max-width:920px}#import .settings-account{max-width:920px}
+body{font-size:16px;background:#f4f6f1}
+button,a,input,select,summary{touch-action:manipulation}
+button,input,select,textarea{font-size:16px}
+button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid #406d59;outline-offset:3px}
+.sidebar{height:64px;padding:0 24px;justify-content:space-between;gap:20px}
+.sidebar .brand{font-size:24px}.sidebar nav{gap:8px}.sidebar .nav-item{min-height:44px;font-size:15px;padding:10px 18px}
+main{max-width:none;padding:14px 16px}
+.tablet-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:10px}
+.tablet-heading h1{font-size:25px;line-height:1.35;letter-spacing:0;margin:0}
+.tablet-heading p{margin:5px 0 0;color:#6a7a69;font-size:14px;font-variant-numeric:tabular-nums}
+.primary{min-height:48px;font-size:16px;padding:11px 20px;border-radius:9px}
+.google-entry{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 0 14px}.google-entry .notice{margin:0;background:none;border:0;padding:0;color:#738168;font-size:12px;line-height:1.6}.google-entry button{flex:none;min-height:44px;padding:8px 14px;font-size:14px;border-radius:8px}.google-advanced{margin:12px 0;border-top:1px solid #dce4d5}.google-advanced summary{min-height:48px;display:list-item;cursor:pointer;padding:14px 0;font-size:14px;color:#526b59}
+.tablet-toolbar{display:flex;justify-content:space-between;gap:14px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.date-controls{gap:7px}.icon-button{width:48px;height:48px;font-size:26px;border-radius:8px}
+.date-controls .quiet{min-width:58px;min-height:48px;font-size:16px;background:#fff;border:1px solid #dce4d5}
+.date-controls input{font-size:15px;padding:10px 8px;width:151px;height:48px;border:1px solid #dce4d5;border-radius:8px;background:#fff;font-weight:400}
+.range-switch{display:flex;gap:4px;border:1px solid #dce4d5;padding:4px;border-radius:10px;background:#e9eee3}
+.range-switch button{min-height:44px;min-width:83px;padding:8px 14px;border:0;border-radius:7px;background:none;color:#66745d;font-size:16px;font-weight:500}
+.range-switch button small{font-size:12px;margin-left:4px;font-weight:400}
+.range-switch button.active{color:#fff;background:#406d59;box-shadow:0 1px 4px #294b3020}
+.schedule{margin-bottom:14px;border-radius:12px;border-color:#d8e2d1}
+.touch-hint{display:flex;justify-content:space-between;gap:12px;padding:13px 16px;font-size:13px;color:#617459;line-height:1.6}
+#meeting-count{margin-left:9px;color:#8a9681}
+.gantt-grid{--slot-width:76px;--label-width:102px;min-width:100%;width:calc(var(--label-width) + var(--slots)*var(--slot-width) + 30px);padding-right:30px}
+.gantt-scroll{max-height:none;-webkit-overflow-scrolling:touch;scrollbar-width:auto;overscroll-behavior:contain}
+.gantt-axis{height:54px;position:relative}
+.gantt-corner{padding-left:16px;font-size:14px}.gantt-corner small{font-size:11px}
+.gantt-tick{font-size:13px;font-weight:500;padding:17px 0 0 7px;color:#506346;border-left-color:#cbd9c0;font-variant-numeric:tabular-nums}
+.gantt-tick.half-hour{font-size:12px;color:#89977d;font-weight:400}
+.gantt-end{right:-25px;top:18px;font-size:12px;color:#66765c}
+.gantt-room.day-button{padding:13px 14px;min-height:84px;justify-content:center;border-right:1px solid #cbd9c0}
+.gantt-room.day-button strong{font-size:16px;font-weight:600}.gantt-room.day-button span{font-size:12px;line-height:1.6;margin-top:4px}
+.gantt-room em{font-size:10px;padding:3px 4px;margin-left:3px}
+.gantt-row{border-bottom-color:#dde5d6}
+.gantt-row.selected-day .gantt-room{background:#dfeccd;box-shadow:inset 4px 0 #547947}
+.gantt-row.weekend .gantt-track{background-color:#f8f9f5}
+.gantt-bar{height:116px;padding:4px 5px;border-radius:10px;border-left:4px solid #527c43;background:#e4efda;color:#264524;box-shadow:inset -3px 0 0 #fff;white-space:normal}
+.gantt-bar strong{font-size:15px;font-weight:600;line-height:1.3;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;max-height:40px;overflow:hidden}
+.gantt-bar span{font-size:12px;line-height:1.5;margin-top:4px;color:#46683d}
+.gantt-bar small{display:none}
+.gantt-bar.non-blocking{background:#f8fbf2;border:2px dashed #93a982;color:#657857}
+.gantt-row-empty{left:114px;padding:35px 15px;font-size:13px;color:#8b987e}
+.gantt-caption{font-size:12px;padding:11px 16px;line-height:1.6;color:#6e7f62}
+.extra-tools{color:#68785f;margin:8px 0 18px}
+.extra-tools summary{cursor:pointer;min-height:46px;padding:11px 4px;font-size:15px;width:fit-content}
+.extra-tools input{padding:13px 14px;width:min(100%,500px);min-height:48px;border:1px solid #d5dfcd;border-radius:8px;background:#fff;margin:5px 0 10px}
+dialog{width:min(580px,calc(100vw - 32px));padding:24px;border-radius:18px;max-height:90dvh}
+.sheet-top{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px;position:sticky;top:-24px;background:#fff;z-index:1;padding:8px 0;border-bottom:1px solid #e3e9dd}
+.sheet-top .close-detail{margin-left:auto;background:#edf2e7;border-radius:8px}
+.sheet-top button{font-size:16px;min-height:48px;padding:10px 16px}
+#detail h2{font-size:24px;line-height:1.5;padding:2px 0 8px}
+#detail .eyebrow{display:none}.detail-info{padding:15px 0;font-size:17px;line-height:1.8}.detail-info span{font-size:13px;margin-bottom:6px}
+.meet-link{display:inline-flex;align-items:center;justify-content:center;min-height:48px;padding:10px 18px;font-size:16px;background:#e8f1df;border:1px solid #bfd2ad;border-radius:8px}
+.delete-button{min-height:48px;margin-top:14px;font-size:14px}
+.agenda-list{display:flex;flex-direction:column;gap:12px;margin-top:16px}
+.agenda-item{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;text-align:left;padding:16px;border:1px solid #d6e2cb;border-radius:10px;background:#f2f7ec;min-height:80px;color:var(--ink)}
+.agenda-item strong{display:block;font-size:17px;line-height:1.5}.agenda-item span{display:block;font-size:14px;color:#6b7d5f;margin-top:5px}.agenda-item i{font-style:normal;font-size:24px;color:#6d885d}
+.agenda-note{font-size:14px;color:#7a866e;line-height:1.8}.agenda-empty{padding:28px 0;font-size:17px;color:#6b7d5f}
+form>label,.form-row>label{font-size:15px}form input,form select,form textarea{font-size:16px;min-height:48px;border-radius:8px;padding:11px}
+.dialog-actions .quiet{min-height:48px;font-size:16px;padding:10px 18px}.dialog-heading h2{font-size:23px}
+.import-grid .panel p,.calendar-choice,.google-status,.setup-list{font-size:14px!important}.google-input,.calendar-choice select{font-size:16px;min-height:48px}.google-label{font-size:14px}.google-actions .quiet,.outlined{min-height:48px;font-size:15px}.calendar-choice{padding:14px 0}.panel h2{font-size:20px}
+@media(max-width:800px){main{padding:18px 16px}.sidebar{padding:0 16px}.tablet-toolbar{gap:10px}.range-switch button{min-width:72px;padding:8px 10px}.range-switch button small{display:block;font-size:11px;margin-left:0;line-height:1.2}.range-switch button{min-height:48px}.range-switch{padding:3px}.date-controls input{width:144px}.touch-hint{font-size:12px;padding:12px}.gantt-grid{--label-width:94px}.gantt-room.day-button{padding:12px}.gantt-room.day-button strong{font-size:15px}.gantt-room.day-button span{font-size:11px}.gantt-row-empty{left:106px}.gantt-tick{padding-left:5px}}
+@media(max-width:560px){.sidebar .nav-item{font-size:14px;padding:10px 12px}.sidebar .brand{font-size:22px}.tablet-heading h1{font-size:23px}.tablet-heading p{font-size:12px}.tablet-toolbar{align-items:stretch}.date-controls{justify-content:space-between;width:100%}.date-controls input{flex:1;max-width:180px}.range-switch{width:100%}.range-switch button{flex:1;min-height:48px}.range-switch button small{display:inline;margin-left:5px}.touch-hint{flex-wrap:wrap;gap:3px}.gantt-grid{--label-width:84px;--slot-width:56px}.gantt-room.day-button{padding:10px}.gantt-room.day-button strong{font-size:14px}.gantt-room em{display:block;width:fit-content;margin:3px 0 0}.gantt-row-empty{left:96px}dialog{width:calc(100vw - 16px);padding:20px;border-radius:16px;max-height:94dvh}.sheet-top{top:-20px}.gantt-caption{font-size:11px}.form-row{gap:10px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
+
+/* Keep the real current time centered, with blank space at midnight boundaries. */
+#gantt{--edge-space:0px}
+#gantt[data-follow-layout="true"]{--edge-space:var(--now-edge,0px)}
+.gantt-grid{width:calc(var(--label-width) + var(--slots)*var(--slot-width) + 30px + 2*var(--edge-space))}
+.gantt-scroll{height:var(--calendar-height,calc(100dvh - 340px));max-height:none;min-height:240px;scroll-behavior:auto;overflow-anchor:none}
+.gantt-axis{position:sticky;top:0;z-index:5}
+.gantt-ticks{padding-left:var(--edge-space);padding-right:var(--edge-space)}
+.gantt-end{right:calc(var(--edge-space) - 25px)}
+.gantt-track,.gantt-track.unknown,.gantt-row.weekend .gantt-track{background:#fff!important}
+.gantt-track-body{position:relative;height:100%;margin-inline:var(--edge-space);background-color:#fff;background-image:linear-gradient(to right,#d8e2ce 1px,transparent 1px),linear-gradient(to right,transparent 50%,#fafbf7 50%);background-size:calc(100% / var(--slots)) 100%,calc(200% / var(--slots)) 100%}
+.gantt-row.weekend .gantt-track-body{background-color:#f7f9f2}
+.unknown .gantt-track-body{background-color:#f2f2ec;background-image:repeating-linear-gradient(135deg,transparent,transparent 8px,#e8eae2 8px,#e8eae2 9px);background-size:auto}
+.now-slot{position:absolute;top:0;bottom:0;pointer-events:none;z-index:0;background:#ffe397a6;box-shadow:inset 0 0 0 2px #d6a03580}
+.now-line{position:absolute;top:0;bottom:0;width:2px;background:#bd731a;z-index:3;pointer-events:none}
+.now-line::before{content:'';position:absolute;left:-4px;top:0;width:10px;height:10px;border-radius:50%;background:#bd731a}
+.now-line>span{position:absolute;bottom:3px;left:50%;transform:translateX(-50%);padding:3px 7px;border-radius:4px;background:#9c5b09;color:white;font-size:11px;font-weight:500;white-space:nowrap}
+.gantt-tick.is-current{background:#ffe2a1;color:#774708;font-weight:700;box-shadow:inset 0 -3px #bc7c23}
+.gantt-bar.is-running{background:#f7dda0;border-left-color:#b6781d;color:#5c3f13;box-shadow:inset 0 0 0 2px #c58a3480}
+.gantt-bar.is-running span{color:#795316}
+.gantt-row-empty{z-index:1;pointer-events:none}
+#follow-now.active{background:#9c651c;color:#fff}
+#now-clock{font-variant-numeric:tabular-nums}
+@media(max-width:1050px){.tablet-toolbar{align-items:stretch}.range-switch{margin-left:auto}}
+@media(max-width:800px){.range-switch{width:100%;margin-left:0}.range-switch button{flex:1}.range-switch button small{display:inline;margin-left:4px}}
+
+/* Each person has a separate touch target inside the reservation. */
+.gantt-event-button{display:block;width:100%;height:62px;padding:3px 5px;border:0;border-radius:5px;background:transparent;color:inherit;text-align:left;overflow:hidden}
+.gantt-event-button:hover{background:#ffffff45;filter:none}
+.gantt-event-button strong{font-size:15px;line-height:1.35;max-height:40px}
+.gantt-event-button>span{margin-top:2px;font-size:12px;white-space:nowrap}
+.booking-people{display:flex;gap:0;align-items:center;height:44px;overflow-x:auto;overflow-y:hidden;overscroll-behavior-x:contain;scrollbar-width:none;border-top:1px solid #71956a20}
+.booking-people::-webkit-scrollbar{display:none}
+.person-dot{flex:0 0 44px;width:44px;height:44px;display:grid;place-items:center;padding:0;border:0;border-radius:8px;background:transparent;color:#3c6047}
+.gantt-bar .person-dot>span{display:grid;place-items:center;width:34px;height:34px;margin:0;border-radius:50%;background:#f9fcf6;border:1px solid #b6cbb0;box-shadow:0 1px 3px #32542615;font-size:16px;font-weight:600;line-height:1;overflow:visible}
+.gantt-bar .tone-1>span{background:#fff2dc;color:#886430;border-color:#dcc9a4}
+.gantt-bar .tone-2>span{background:#e4effb;color:#3e6490;border-color:#abc4de}
+.gantt-bar .tone-3>span{background:#f1e9fa;color:#79528f;border-color:#cdb5dc}
+.gantt-bar .tone-4>span{background:#fbe7e7;color:#925551;border-color:#dfbab7}
+.person-dot:hover,.person-dot[aria-expanded="true"]{background:#ffffff70;filter:none}
+.person-dot[aria-expanded="true"]>span{outline:2px solid #406d59;outline-offset:1px}
+.gantt-bar .no-people{font-size:11px;margin:0;padding:0 5px;color:#7c8d70}
+.gantt-row-empty{padding-top:55px}
+#person-popover{position:fixed;inset:auto;margin:0;padding:14px 12px 14px 18px;max-width:calc(100vw - 16px);border:1px solid #c8d8bb;border-radius:14px;background:#fff;color:#253c3c;box-shadow:0 8px 28px #253c3c30}
+#person-popover:popover-open{display:flex;align-items:center;gap:18px}
+#person-popover[data-fallback="true"]{display:none;z-index:20}
+#person-popover[data-fallback="true"]:not([hidden]){display:flex;align-items:center;gap:18px}
+#person-popover small{display:block;color:#7a8870;font-size:12px;margin-bottom:4px}
+#person-name{display:block;font-size:20px;line-height:1.5;overflow-wrap:anywhere;max-width:min(330px,calc(100vw - 110px))}
+#person-popover button{height:44px;width:44px;flex:none;border:0;border-radius:9px;background:#f0f4eb;font-size:24px;color:#52664a}
+@media(max-width:800px){main{padding:12px}.gantt-grid{--slot-width:76px}}
+
+/* Constrain page layout; the wide timeline scrolls inside its own viewport. */
+.app,main,.view,.schedule,.import-grid,.panel,.tablet-heading>div,.settings-account>div{min-width:0;max-width:100%}
+.tablet-heading h1,.panel h2,#detail h2,.detail-info,.agenda-item strong{overflow-wrap:anywhere}
+.sidebar .brand,.sidebar nav,.sidebar .access-controls{min-width:0}
+.sidebar .brand,.sidebar .access-controls{flex-shrink:0}
+.sidebar .nav-admin-link{display:flex;align-items:center;justify-content:center;min-height:48px;padding:10px 14px;border-radius:8px;background:#ffffff16;color:#d5e2db;text-decoration:none;text-align:center;font-size:14px;line-height:1.4;overflow-wrap:anywhere}
+.sidebar .nav-admin-link[hidden]{display:none}
+.google-entry{flex-wrap:wrap}
+.google-entry .notice{flex:1 0 150px}
+.google-entry-actions{min-width:0;max-width:100%}
+.gantt-axis,.gantt-row{grid-template-columns:var(--label-width) minmax(0,1fr)}
+.gantt-track{min-width:0}
+.shared-calendar>div{min-width:0;flex:1}
+.shared-calendar>span{flex:none;white-space:nowrap;font-size:12px}
+.shared-calendar .shared-authorization{display:inline-flex;align-items:center;padding:4px 8px;border-radius:6px;background:#e7f1e5;color:#42643d;font-size:12px;font-weight:600;line-height:1.5}
+.shared-calendar[data-authorization="missing"] .shared-authorization,.shared-calendar[data-authorization="expired"] .shared-authorization{background:#fbe6de;color:#a14935}
+.shared-calendar[data-authorization="primary"] .shared-authorization{background:#fff1d9;color:#8a632c}
+.shared-calendar[data-authorization="unknown"] .shared-authorization{background:#eef0ed;color:#6a7a69}
+.shared-calendars summary{line-height:1.6;overflow-wrap:anywhere}
+.sheet-top{flex-wrap:wrap}.dialog-heading>div{min-width:0}.dialog-heading .icon-button{flex:none}
+.form-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+.form-row input,.form-row select,#booking-form>label>input,#booking-form textarea{min-width:0;max-width:100%}
+#toast{width:max-content;max-width:calc(100vw - 32px);overflow-wrap:anywhere;font-size:14px}
+@media(max-width:700px){
+  body[data-page="board"] .sidebar{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;padding:8px 12px}
+  .sidebar .brand{grid-column:1;grid-row:1;justify-self:start;font-size:22px}
+  body[data-page="board"] .access-controls{grid-column:2;grid-row:1;margin:0}
+  .sidebar nav{grid-column:1/-1;grid-row:2;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;width:100%}
+  .sidebar:has(#admin-link[hidden]) nav{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .sidebar .nav-item,.sidebar .nav-admin-link{min-width:0;min-height:48px;padding:8px 6px;font-size:14px;justify-content:center}
+  .sidebar .nav-item span{display:none}
+}
+@media(max-width:600px){
+  main{padding:12px}
+  .tablet-heading{align-items:flex-start;gap:10px}
+  .tablet-heading h1{font-size:22px}.tablet-heading p{font-size:12px;line-height:1.6}
+  .tablet-heading .primary{padding-inline:12px;flex:none}
+  .google-entry{display:grid;grid-template-columns:minmax(0,1fr);gap:6px}
+  .google-entry .notice{font-size:12px}
+  .google-entry-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;width:100%}
+  .google-entry-actions button{min-width:0;min-height:48px;max-width:100%;padding:10px 8px;font-size:15px}
+  .google-entry-actions #google-authorize{grid-column:1/-1;order:-1}
+  .google-entry-actions:has(#pwa-install[hidden]) #google-start{grid-column:1/-1}
+  .location-filter{padding:12px;gap:8px}
+  .location-controls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px}
+  .location-controls .primary{padding-inline:12px;font-size:15px}
+  .shared-calendar{flex-wrap:wrap;gap:4px}.shared-calendar>div{flex-basis:100%}
+  .shared-calendar>span{font-size:11px}
+  .tablet-toolbar{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;margin-bottom:12px}
+  .date-controls{display:grid;grid-template-columns:44px 50px 44px minmax(0,1fr);gap:6px;width:100%}
+  .date-controls .icon-button{width:44px;height:48px}
+  .date-controls .quiet{min-width:0;width:100%;padding-inline:4px;font-size:15px}
+  .date-controls input{min-width:0;max-width:none;width:100%;height:48px;padding:6px;font-size:16px}
+  .range-switch{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px;width:100%;margin:0;padding:3px}
+  .range-switch button{min-width:0;min-height:56px;padding:6px 2px;font-size:15px;line-height:1.5}
+  .range-switch button small{display:block;margin:0;font-size:11px;white-space:nowrap}
+  .gantt-grid{--label-width:76px;--slot-width:64px}
+  .gantt-corner{padding-left:10px;font-size:13px}.gantt-room.day-button{padding:8px}
+  .gantt-room.day-button strong{font-size:14px}.gantt-room.day-button span{font-size:11px}
+  .gantt-room em{display:block;width:fit-content;margin:3px 0 0}
+  .gantt-row-empty{left:84px;max-width:calc(100% - 88px);overflow-wrap:anywhere}
+  .touch-hint{flex-wrap:wrap;gap:4px;padding:10px 12px;font-size:12px}
+  .gantt-caption{padding:10px 12px;gap:4px;font-size:11px}
+  .settings-account{padding:14px}.panel{padding:18px}
+  .google-actions{display:grid;grid-template-columns:minmax(0,1fr)}
+  .google-actions button{width:100%;min-width:0;min-height:48px;white-space:normal}
+  .form-row{grid-template-columns:minmax(0,1fr);gap:0}
+  dialog{width:calc(100vw - 24px);max-height:calc(100dvh - 24px);padding:18px}
+  .sheet-top{top:-18px}.dialog-heading h2{font-size:21px}
+  #booking-dialog .dialog-heading{position:sticky;top:-18px;z-index:1;background:#fff;padding-block:8px;border-bottom:1px solid #e3e9dd}
+}
+@media(max-width:360px){.location-controls{grid-template-columns:minmax(0,1fr)}.location-controls .primary{width:100%}}
+@media(max-height:500px){.gantt-scroll{min-height:200px}}
+
+/* A focused preview keeps only the date, time controls and interactive chart. */
+.timeline-actions{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;margin-left:auto}
+.timeline-actions .range-switch{margin:0}
+.fullscreen-button{flex:none;min-height:48px;padding:10px 16px;border:1px solid #cbd8c4;border-radius:9px;background:#fff;font-size:15px;white-space:nowrap}
+.fullscreen-button[aria-pressed="true"]{background:#406d59;color:#fff;border-color:#406d59}
+.fullscreen-button:disabled{opacity:.65;cursor:wait}
+body.board-fullscreen{position:fixed;inset:0;width:100%;height:100dvh;overflow:hidden;background:#f4f6f1}
+body.board-fullscreen>.sidebar,body.board-fullscreen .app>header,body.board-fullscreen main>:not(#overview),body.board-fullscreen #overview>:not(.tablet-toolbar):not(.schedule){display:none!important}
+body.board-fullscreen .app,body.board-fullscreen main,body.board-fullscreen #overview{height:100%;min-height:0}
+body.board-fullscreen main{padding:max(8px,env(safe-area-inset-top)) max(8px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left))}
+body.board-fullscreen #overview{display:flex;flex-direction:column}
+body.board-fullscreen .tablet-toolbar{flex:none;margin-bottom:10px}
+body.board-fullscreen .schedule{display:flex;flex-direction:column;flex:1;min-height:0;margin-bottom:0}
+body.board-fullscreen .touch-hint,body.board-fullscreen .gantt-caption{flex:none}
+body.board-fullscreen .gantt-scroll{flex:1;min-height:0;height:auto}
+@media(max-width:800px){.timeline-actions{width:100%}.timeline-actions .range-switch{flex:1;min-width:0;width:auto}.timeline-actions .range-switch button{min-width:0}}
+@media(max-width:600px){.timeline-actions{display:block}.timeline-actions .range-switch{width:100%}body.board-fullscreen .tablet-toolbar{gap:6px;margin-bottom:6px}body.board-fullscreen .range-switch button{min-height:48px;font-size:14px}body.board-fullscreen .touch-hint{padding:6px 10px;font-size:11px}body.board-fullscreen .gantt-caption{padding:6px 10px;font-size:10px}}
+@media(max-height:500px){body.board-fullscreen .touch-hint{padding-block:5px}body.board-fullscreen .gantt-caption{padding-block:5px}body.board-fullscreen .tablet-toolbar{margin-bottom:6px}}
+
+/* Keep today's row distinct while the date list scrolls independently. */
+.gantt-scroll{overflow-x:auto;overflow-y:auto;touch-action:pan-x pan-y}
+.gantt-row.is-today .gantt-room.day-button{background:#dfeccd;box-shadow:inset 4px 0 #547947}
+.gantt-row.is-today .gantt-track-body{background-color:#edf5e2}
+.gantt-room[aria-current="date"] strong{color:#294e27;font-weight:700}
+.tablet-toolbar{align-items:flex-start}
+.date-controls{display:grid;grid-template-columns:48px 58px 48px minmax(132px,151px) auto;align-items:center;gap:7px;min-width:0;max-width:100%;width:fit-content}
+.date-controls #day{box-sizing:border-box;width:100%;max-width:100%;min-width:0;min-inline-size:0;-webkit-min-logical-width:0;overflow:hidden;padding-inline:6px;font-size:16px;font-variant-numeric:tabular-nums}
+.date-controls #day::-webkit-date-and-time-value{min-width:0;text-align:center;overflow:hidden}
+.date-controls #day::-webkit-datetime-edit{min-width:0;padding:0}
+.date-controls #day::-webkit-calendar-picker-indicator{flex:none;width:16px;margin:0;padding:0}
+.date-controls .fullscreen-button{justify-self:stretch;min-width:0;margin:0}
+.date-options{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:center;gap:0 8px;min-width:0;max-width:100%;width:100%}
+.date-controls .date-options label{display:flex;align-items:center;gap:8px;min-height:48px;min-width:0;margin:0;padding:0 8px;cursor:pointer;font-size:14px;white-space:nowrap}
+.date-controls .date-options input{flex:none;width:22px;height:22px;margin:0;padding:0;accent-color:#547947}
+.date-holiday-note{grid-column:1/-1;width:100%;font-size:11px;line-height:1.6;color:#79847b;overflow-wrap:anywhere}
+.gantt-room.day-button .holiday-badge{display:block;width:fit-content;max-width:100%;margin-top:5px;padding:2px 4px;border-radius:4px;background:#f9dcd7;color:#9b4339;font-size:10px;line-height:1.45;white-space:normal;overflow-wrap:anywhere}
+/* Today keeps its side marker and badge when it falls on a red holiday row. */
+.gantt-row.weekend .gantt-room.day-button,.gantt-row.is-holiday .gantt-room.day-button{background:#fff0ef}
+.gantt-row.weekend .gantt-track-body,.gantt-row.is-holiday .gantt-track-body{background-color:#fff0ef}
+.gantt-row.weekend .gantt-track:not(.unknown) .gantt-track-body,.gantt-row.is-holiday .gantt-track:not(.unknown) .gantt-track-body{background-image:linear-gradient(to right,#ead3d0 1px,transparent 1px),linear-gradient(to right,transparent 50%,#fff7f6 50%)}
+@media(max-width:600px){
+  .tablet-toolbar{grid-template-columns:minmax(0,1fr);align-items:stretch}
+  .date-controls{grid-template-columns:44px 50px 44px minmax(0,1fr) 48px;gap:6px;width:100%}
+  .date-controls #day{height:48px;max-width:100%;padding:6px 2px;appearance:none;-webkit-appearance:none;text-align:center}
+  .date-controls #board-fullscreen{display:flex;align-items:center;justify-content:center;width:48px;height:48px;min-height:48px;padding:0;font-size:0;line-height:1;white-space:nowrap}
+  #board-fullscreen::before{content:'⛶';font-size:25px;line-height:1}
+  #board-fullscreen[aria-pressed="true"]::before{content:'✕';font-size:22px}
+  .date-options{gap:0 4px}
+  .date-controls .date-options label{padding-inline:2px;min-height:48px}
+  .date-holiday-note{font-size:10px;line-height:1.5}
+  .timeline-actions{width:100%;margin:0}
+  .timeline-actions .range-switch{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));width:100%;min-width:0}
+  .timeline-actions .range-switch button{min-width:0;max-width:100%;padding-inline:2px}
+  .timeline-actions .range-switch button small{display:block;margin:0;white-space:nowrap}
+  body.board-fullscreen .date-controls .date-options label{min-height:44px}
+}
+@media(max-width:360px){
+  .date-controls{grid-template-columns:44px 50px 44px minmax(48px,1fr);gap:6px}
+  .date-controls #day{grid-column:1/-1;grid-row:2;padding-inline:10px}
+  .date-controls #board-fullscreen{grid-column:4;grid-row:1;justify-self:end}
+  .date-options{grid-row:3}
+  .date-controls .date-options label{font-size:13px;gap:6px}
+}

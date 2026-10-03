@@ -1,0 +1,18 @@
+{
+  "id": "/roomly/",
+  "name": "Roomly 會議室",
+  "short_name": "Roomly",
+  "description": "共用會議室預約與 Google 日曆看板",
+  "lang": "zh-Hant",
+  "start_url": "/roomly/",
+  "scope": "/roomly/",
+  "display": "standalone",
+  "background_color": "#f4f6f1",
+  "theme_color": "#1b3335",
+  "prefer_related_applications": false,
+  "icons": [
+    {"src": "/roomly/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/roomly/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/roomly/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ]
+}

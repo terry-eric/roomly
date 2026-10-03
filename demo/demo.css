@@ -1,0 +1,13 @@
+.demo-banner{margin:0;padding:11px max(16px,env(safe-area-inset-left));background:#f5e5b7;color:#5d4714;border-bottom:1px solid #e8cf8a;font:500 14px/1.6 system-ui,sans-serif;text-align:center;overflow-wrap:anywhere}
+.demo-banner strong{margin-right:8px}
+.demo-disabled-actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0}
+.demo-disabled-actions button{min-height:44px;padding:10px 14px;border:1px solid #d7dfd0;border-radius:8px;background:#edf0e9;color:#64715e;font:inherit;cursor:not-allowed}
+body[data-demo="true"] .google-entry .notice{font-size:14px;line-height:1.7}
+body[data-demo="true"] .google-entry-actions{flex-shrink:0}
+body[data-demo="true"] .access-controls{display:none}
+body[data-demo="true"] .settings-account{overflow-wrap:anywhere}
+body[data-demo="true"].board-fullscreen .demo-banner{position:fixed;bottom:0;left:0;right:0;z-index:12;padding:3px 8px;font-size:11px;pointer-events:none}
+body[data-demo="true"].board-fullscreen .demo-banner strong{display:inline;margin:0}
+body[data-demo="true"].board-fullscreen .demo-banner span{display:none}
+body[data-demo="true"].board-fullscreen main{padding-bottom:28px}
+@media(max-width:600px){.demo-banner{font-size:12px;text-align:left}.demo-banner strong{display:block}.google-entry-actions #google-start{font-size:14px;padding:10px 12px}.demo-disabled-actions{flex-direction:column}.demo-disabled-actions button{width:100%}}

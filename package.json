@@ -1,0 +1,28 @@
+{
+  "name": "roomly-meeting-room",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A shared meeting room board with Google Calendar sync and a credential-free demo.",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "demo": "node scripts/serve-demo.mjs",
+    "build:demo": "node scripts/build-demo.mjs",
+    "dev": "npm run build && npm run db:local && wrangler dev --config wrangler.local.jsonc --port 3000",
+    "db:local": "wrangler d1 migrations apply roomly-access --local --config wrangler.local.jsonc",
+    "db:remote": "wrangler d1 migrations apply roomly-access --remote",
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.cjs tests/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "check:deploy": "npm run build && wrangler deploy --dry-run",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261001.1",
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.146.0"
+  },
+  "dependencies": {
+    "jose": "^6.2.12"
+  }
+}

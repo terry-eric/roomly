@@ -1,0 +1,15 @@
+node_modules/
+dist/
+demo-dist/
+.wrangler/
+.dev.vars*
+!.dev.vars.example
+.env*
+*.log
+*.sqlite
+*.sqlite3
+*.db
+coverage/
+.DS_Store
+Thumbs.db
+docs/images/documentation-review.png
