@@ -9,12 +9,13 @@ import { buildDemo, DEMO_FILES, projectRoot } from '../scripts/build-demo.mjs';
 import { createDemoServer } from '../scripts/serve-demo.mjs';
 
 const require = createRequire(import.meta.url), core = require('../core.js'), fixtures = require('../demo/fixtures.js');
-const inputs = ['index.html', 'app.js', 'style.css', 'tablet.css', 'access.css', 'holidays.js', 'core.js', 'fullscreen.js', 'demo/fixtures.js', 'demo/bootstrap.js', 'demo/demo.css'];
+const inputs = ['index.html', 'app.js', 'style.css', 'tablet.css', 'access.css', 'holidays.js', 'core.js', 'fullscreen.js', 'demo/fixtures.js', 'demo/bootstrap.js', 'demo/demo.css', 'docs/images/use-cases.svg', 'docs/images/calendar-flow.svg'];
 
 async function buildFixture(t) {
   const project = await mkdtemp(join(tmpdir(), 'roomly-demo-test-'));
   t.after(() => rm(project, { recursive: true, force: true }));
   await mkdir(join(project, 'demo'));
+  await mkdir(join(project, 'docs/images'), { recursive: true });
   for (const input of inputs) await copyFile(join(projectRoot, input), join(project, input));
   return { project, output: await buildDemo({ projectDir: project }) };
 }
@@ -138,6 +139,11 @@ test('demo server serves a repository subpath and refuses API, mutation and trav
   const page = await fetch(base + '/roomly-demo/'); assert.equal(page.status, 200); assert.match(await page.text(), /虛構資料/);
   assert.match(page.headers.get('content-security-policy'), /connect-src 'none'/);
   const script = await fetch(base + '/roomly-demo/demo-bootstrap.js'); assert.equal(script.status, 200); assert.match(script.headers.get('content-type'), /javascript/);
+  for (const file of ['use-cases.svg', 'calendar-flow.svg']) {
+    const image = await fetch(base + '/roomly-demo/' + file);
+    assert.equal(image.status, 200); assert.match(image.headers.get('content-type'), /image\/svg\+xml/);
+    assert.match(await image.text(), /<svg\b/);
+  }
   for (const path of ['/api/me', '/roomly-demo/api/calendar/feed', '/roomly-demo/config.js', '/roomly-demo/../package.json', '/roomly-demo/%2e%2e%2fpackage.json', '/roomly-demo/sw.js']) assert.equal((await fetch(base + path)).status, 404, path);
   assert.equal((await fetch(base + '/roomly-demo/', { method: 'POST', body: 'no mutation' })).status, 405);
   const head = await fetch(base + '/roomly-demo/core.js', { method: 'HEAD' }); assert.equal(head.status, 200); assert.equal(await head.text(), '');

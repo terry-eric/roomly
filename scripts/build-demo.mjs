@@ -3,7 +3,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-export const DEMO_FILES = Object.freeze(['index.html', 'style.css', 'tablet.css', 'access.css', 'demo.css', 'holidays.js', 'core.js', 'app.js', 'fullscreen.js', 'demo-fixtures.js', 'demo-bootstrap.js', '.nojekyll']);
+export const DEMO_FILES = Object.freeze(['index.html', 'style.css', 'tablet.css', 'access.css', 'demo.css', 'holidays.js', 'core.js', 'app.js', 'fullscreen.js', 'demo-fixtures.js', 'demo-bootstrap.js', 'use-cases.svg', 'calendar-flow.svg', '.nojekyll']);
 export const DEMO_CSP = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; worker-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'";
 
 function replaceOnce(source, from, to) {
@@ -51,6 +51,7 @@ export async function buildDemo({ projectDir = projectRoot } = {}) {
   await mkdir(output, { recursive: true });
   for (const file of ['tablet.css', 'access.css', 'holidays.js', 'core.js', 'fullscreen.js']) await copyFile(join(project, file), join(output, file));
   for (const [source, target] of [['demo/fixtures.js', 'demo-fixtures.js'], ['demo/bootstrap.js', 'demo-bootstrap.js'], ['demo/demo.css', 'demo.css']]) await copyFile(join(project, source), join(output, target));
+  for (const file of ['use-cases.svg', 'calendar-flow.svg']) await copyFile(join(project, 'docs/images', file), join(output, file));
   await Promise.all([writeFile(join(output, 'index.html'), html), writeFile(join(output, 'app.js'), app), writeFile(join(output, 'style.css'), css), writeFile(join(output, '.nojekyll'), '')]);
   return output;
 }

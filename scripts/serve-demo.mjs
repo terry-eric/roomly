@@ -4,7 +4,7 @@ import { extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildDemo, DEMO_CSP, DEMO_FILES, projectRoot } from './build-demo.mjs';
 
-const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml; charset=utf-8' };
 
 export function createDemoServer({ rootDir = join(projectRoot, 'demo-dist'), basePath = '/' } = {}) {
   if (!/^\/(?:[A-Za-z0-9_-]+\/)*$/.test(basePath)) throw new Error('Invalid demo base path');

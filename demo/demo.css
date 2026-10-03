@@ -2,6 +2,7 @@
 .demo-banner strong{margin-right:8px}
 .demo-disabled-actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0}
 .demo-disabled-actions button{min-height:44px;padding:10px 14px;border:1px solid #d7dfd0;border-radius:8px;background:#edf0e9;color:#64715e;font:inherit;cursor:not-allowed}
+.demo-explainer{max-width:1080px;margin:22px 0}.demo-explainer img{display:block;width:100%;height:auto;border:1px solid #d7dfd0;border-radius:12px}.demo-explainer figcaption{margin-top:8px;font-size:13px;line-height:1.7;color:#64715e}body[data-demo="true"] #calendar-settings{grid-column:1/-1;min-width:0}body[data-demo="true"] #calendar-settings p{font-size:15px;line-height:1.8}body[data-demo="true"] #calendar-settings h3{margin-top:26px;font-size:18px}
 body[data-demo="true"] .google-entry .notice{font-size:14px;line-height:1.7}
 body[data-demo="true"] .google-entry-actions{flex-shrink:0}
 body[data-demo="true"] .access-controls{display:none}

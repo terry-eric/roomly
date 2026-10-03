@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="600" viewBox="0 0 1080 600" role="img" aria-labelledby="use-cases-title use-cases-desc">
+  <title id="use-cases-title">Roomly 使用情境：門外平板與手機共用會議預約看板</title>
+  <desc id="use-cases-desc">左側是在會議室門外固定的平板，顯示目前的日曆預約。右側是手機上的 PWA，可遠端查看空檔。兩個裝置共用同一份會議預約看板。圖中的會議室、時間與人員皆為虛構示意，並非感測器偵測的實際占用。</desc>
+  <defs>
+    <style>
+      text{font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;fill:#253c3c}
+      .heading{font-size:40px;font-weight:700}
+      .card-title{font-size:32px;font-weight:700}
+      .label{font-size:28px;fill:#526b59}
+      .small{font-size:26px;fill:#617459}
+      .screen-title{font-size:26px;font-weight:600}
+      .light{fill:#fffdf6}
+    </style>
+    <marker id="shared-arrow" markerWidth="10" markerHeight="10" refX="7" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1 1L7 5L1 9" fill="none" stroke="#52745c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <rect width="1080" height="600" rx="24" fill="#f4f6f1"/>
+  <g transform="translate(40 0)">
+  <text x="500" y="58" text-anchor="middle" class="heading">一個看板，兩種使用方式</text>
+  <text x="500" y="100" text-anchor="middle" class="label">固定查看目前預約，也能隨時查空檔</text>
+
+  <rect x="28" y="126" width="452" height="338" rx="22" fill="#fffdf6" stroke="#d3dfca" stroke-width="2"/>
+  <text x="58" y="174" class="card-title">門外平板</text>
+  <text x="58" y="214" class="label">固定顯示目前預約</text>
+  <g aria-hidden="true">
+    <rect x="58" y="242" width="88" height="194" rx="5" fill="#e7dfca" stroke="#b8ac8f" stroke-width="3"/>
+    <rect x="71" y="256" width="62" height="166" rx="3" fill="#efe9d9" stroke="#d0c5ab" stroke-width="2"/>
+    <circle cx="123" cy="342" r="5" fill="#8d8063"/>
+    <path d="M48 439H154" stroke="#a9b89f" stroke-width="4" stroke-linecap="round"/>
+    <rect x="170" y="241" width="280" height="195" rx="17" fill="#253c3c"/>
+    <rect x="182" y="253" width="256" height="171" rx="8" fill="#f4f6f1"/>
+    <circle cx="444" cy="338" r="2" fill="#c7d7bd"/>
+  </g>
+  <text x="199" y="286" class="screen-title">示範會議室</text>
+  <rect x="195" y="298" width="230" height="111" rx="9" fill="#e4efda" stroke="#bdd0ad"/>
+  <text x="207" y="331" font-size="28" font-weight="700">14:00–15:00</text>
+  <text x="207" y="367" font-size="27">設計討論</text>
+  <g aria-hidden="true">
+    <circle cx="222" cy="390" r="14" fill="#fffdf6" stroke="#b6cbb0"/>
+    <circle cx="258" cy="390" r="14" fill="#fff2dc" stroke="#dcc9a4"/>
+    <circle cx="294" cy="390" r="14" fill="#e4effb" stroke="#abc4de"/>
+  </g>
+  <text x="222" y="397" text-anchor="middle" font-size="26">安</text>
+  <text x="258" y="397" text-anchor="middle" font-size="26">柏</text>
+  <text x="294" y="397" text-anchor="middle" font-size="26">晨</text>
+
+  <rect x="520" y="126" width="452" height="338" rx="22" fill="#fffdf6" stroke="#d3dfca" stroke-width="2"/>
+  <text x="550" y="174" class="card-title">手機 App（PWA）</text>
+  <text x="550" y="214" class="label">遠端查看會議室空檔</text>
+  <g aria-hidden="true">
+    <rect x="564" y="235" width="136" height="208" rx="22" fill="#253c3c"/>
+    <rect x="573" y="247" width="118" height="181" rx="13" fill="#f4f6f1"/>
+    <rect x="609" y="246" width="47" height="8" rx="4" fill="#253c3c"/>
+    <rect x="584" y="284" width="96" height="38" rx="6" fill="#e4efda" stroke="#b8cdab"/>
+    <rect x="584" y="332" width="96" height="56" rx="6" fill="#fffdf6" stroke="#b8cdab" stroke-dasharray="5 4"/>
+    <path d="M614 418H650" stroke="#8a9d90" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <text x="632" y="278" text-anchor="middle" font-size="26" font-weight="600">預約表</text>
+  <text x="632" y="310" text-anchor="middle" font-size="26">14:00</text>
+  <text x="632" y="366" text-anchor="middle" font-size="26">空檔</text>
+  <text x="722" y="286" font-size="33" font-weight="700">隨時查空檔</text>
+  <text x="722" y="330" class="label">15:00–16:00</text>
+  <text x="722" y="380" class="label">同一份預約</text>
+  <text x="722" y="418" class="small">無須人在門外</text>
+
+  <path d="M254 465V483Q254 489 262 489H738Q746 489 746 483V465M500 489V502" fill="none" stroke="#52745c" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#shared-arrow)"/>
+  <rect x="230" y="510" width="540" height="54" rx="14" fill="#406d59"/>
+  <text x="500" y="547" text-anchor="middle" font-size="31" font-weight="700" class="light">共用同一個會議預約看板</text>
+  <text x="500" y="590" text-anchor="middle" class="small">虛構示意 · 顯示日曆預約，並非實際占用偵測</text>
+  </g>
+</svg>
