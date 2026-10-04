@@ -1,7 +1,7 @@
 'use strict';
 (() => {
   const A=RoomApp,access=window.RoomlyAccess,$=s=>document.querySelector(s);
-  let feed=null,generation=0,activeRun=0,busy=false,live=true,authorizing=false,locationDirty=false,locationSaving=false,locationFeedback=null,cachedRefreshPending=false;
+  let feed=null,generation=0,activeRun=0,busy=false,live=true,authorizing=false,locationDirty=false,locationSaving=false,locationFeedback=null,cachedRefreshPending=false,statusRefreshPending=false;
   const syncMessage='日曆變更時自動同步，每 10 分鐘補查';
   const callbackMessages={connected:'我的日曆已完整授權，後端會自動同步符合會議室地點的邀請。',cancelled:'你已取消日曆授權，仍可查看已同步的共用會議。',scope:'請同意日曆活動唯讀及日曆清單唯讀兩項權限，才能完成授權。',account:'請授權與網站登入相同的 Google 帳號。',refresh:'尚未取得背景同步授權，請重新授權。',failed:'Google 日曆授權未完成，請稍後重試。'};
   const returnParams=new URLSearchParams(location.search||''),calendarOutcome=returnParams.get('calendar');
@@ -64,6 +64,7 @@
   }
   async function sync(show=false,manual=false,cached=false){
     if(!access?.request){status('共用看板需要從正式網站登入使用。');return;}
+    if(authorizing)return;
     if(manual&&(busy||locationSaving))return;
     const run=++generation;activeRun=run;live=true;busy=true;
     $('#google-sync').disabled=$('#google-start').disabled=$('#refresh-sources').disabled=true;
@@ -133,10 +134,19 @@
     if(!access||(!feed?.configured&&bootstrap!==true)||authorizing)return;
     authorizing=true;$('#google-connect').disabled=true;$('#google-connect').hidden=true;
     try{status('正在開啟 Google 日曆授權…');const data=await access.request('calendar/authorize',{});const url=new URL(data.url);if(url.origin!=='https://accounts.google.com'||url.pathname!=='/o/oauth2/v2/auth')throw Error('Google 授權網址不正確。');location.assign(url.href);}
-    catch(error){const message=error.message||'Google 日曆授權未完成，請稍後重試。';if(bootstrap===true)callbackMessage=message;status(message);if(bootstrap!==true)A.notify?.(message);authorizing=false;$('#google-connect').disabled=!feed?.configured;$('#google-connect').hidden=false;}
+    catch(error){const message=error.message||'Google 日曆授權未完成，請稍後重試。';if(bootstrap===true)callbackMessage=message;status(message);if(bootstrap!==true)A.notify?.(message);authorizing=false;$('#google-connect').disabled=!feed?.configured;$('#google-connect').hidden=false;flushCachedRefresh();}
   }
   $('#google-connect').onclick=()=>authorize();
-  function flushCachedRefresh(){if(cachedRefreshPending&&!busy&&!locationSaving&&live&&!document.hidden){cachedRefreshPending=false;void sync(false,false,true);}}
+  const needsStatusRefresh=()=>!!feed?.sources.some(source=>['stale','waiting'].includes(source.state));
+  function flushCachedRefresh(){
+    if((cachedRefreshPending||statusRefreshPending)&&!busy&&!locationSaving&&!authorizing&&live&&!document.hidden){
+      // A normal reload may already have resolved a queued status check. Change
+      // notifications still require their cache read even when all sources are ready.
+      const needed=cachedRefreshPending||needsStatusRefresh();
+      cachedRefreshPending=statusRefreshPending=false;
+      if(needed)void sync(false,false,true);
+    }
+  }
   window.addEventListener?.('roomly:calendarchanged',()=>{if(live){cachedRefreshPending=true;flushCachedRefresh();}});
   window.addEventListener?.('roomly:sourceschanged',()=>{
     if(!live)return;
@@ -149,7 +159,7 @@
   $('#google-start').onclick=()=>sync(true,true);
   $('#google-sync').onclick=()=>sync(true,true);$('#refresh-sources').onclick=()=>sync(false,true);
   $('#google-disconnect').onclick=async()=>{try{await access.request('calendar/disconnect',{});await sync();status('已停止分享；後端授權與我的會議快取已移除。可於 Google 第三方連線設定撤銷授權。');}catch(error){status(error.message);}};
-  $('#google-demo').onclick=()=>{generation++;activeRun=0;busy=false;live=false;cachedRefreshPending=false;$('#google-sync').disabled=$('#google-start').disabled=$('#refresh-sources').disabled=false;$('#google-start').textContent='同步';A.showDemo();A.view('overview');status('目前查看這台裝置的本機資料；共用日曆仍由後端同步。');};
+  $('#google-demo').onclick=()=>{generation++;activeRun=0;busy=false;live=false;cachedRefreshPending=statusRefreshPending=false;$('#google-sync').disabled=$('#google-start').disabled=$('#refresh-sources').disabled=false;$('#google-start').textContent='同步';A.showDemo();A.view('overview');status('目前查看這台裝置的本機資料；共用日曆仍由後端同步。');};
   $('#room-location').oninput=()=>{locationDirty=$('#room-location').value!==feed?.location;locationFeedback=null;renderLocation();};
   $('#location-filter').onsubmit=async e=>{
     e.preventDefault();if(locationSaving)return;
@@ -179,6 +189,9 @@
     }
     return sync();
   }).catch(()=>status('請先登入正式網站。'));
-  setInterval(()=>{if(!document.hidden&&live&&!busy&&!locationSaving)void sync();},10*60*1000);
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&live&&!busy&&!locationSaving){if(cachedRefreshPending)flushCachedRefresh();else void sync();}});
+  setInterval(()=>{if(!document.hidden&&live&&!busy&&!locationSaving&&!authorizing)void sync();},10*60*1000);
+  // Successful unchanged syncs advance syncedAt without changing calendarRevision.
+  // Read only the committed cache until queued or stale sources become ready.
+  setInterval(()=>{if(!document.hidden&&live&&!authorizing&&needsStatusRefresh()){statusRefreshPending=true;flushCachedRefresh();}},60*1000);
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&live&&!busy&&!locationSaving&&!authorizing){if(cachedRefreshPending||statusRefreshPending)flushCachedRefresh();else void sync();}});
 })();

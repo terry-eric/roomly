@@ -303,6 +303,29 @@ test('room matching ignores formatting spaces and full-width parentheses in offi
   assert.equal(minimizeEvent({...meeting,location:location.replace('15','16')},name),null);
 });
 
+test('source refresh preserves normalized resource matching and canonical public event data',async()=>{
+  const {f,owner}=await team();await f.connect('admin');
+  const location='示範會議室 (A)';assert.equal((await f.post('calendar/location',{location},owner)).status,200);
+  const roomLocation='台北　示範會議室（Ａ）',records=[
+    {...meeting,id:'z',summary:'Resource',location:'Elsewhere',attendees:[{resource:true,displayName:roomLocation,responseStatus:'accepted'}]},
+    {...meeting,id:'same',summary:'Zulu',location:roomLocation},
+    {...meeting,id:'same',summary:'Alpha',location:roomLocation},
+    {...meeting,id:'a',summary:'Location',location:roomLocation,start:{dateTime:week+'T10:07:00+08:00'}},
+    {...meeting,id:'resource-declined',location:roomLocation,attendees:[{resource:true,displayName:roomLocation,responseStatus:'declined'}]},
+    {...meeting,id:'cancelled',location:roomLocation,status:'cancelled'},
+    {...meeting,id:'self-declined',location:roomLocation,attendees:[{self:true,responseStatus:'declined'}]}
+  ];
+  await mocked((url,options)=>url.hostname==='oauth2.googleapis.com'?normalGoogle(url,options):json({accessRole:'owner',items:records}),async()=>{
+    const feed=await (await f.get('calendar/feed?day='+week,owner)).json(),events=feed.sources.find(source=>source.email===admin).events;
+    assert.deepEqual(events.map(event=>[event.id,event.summary]),[['a','Location'],['same','Alpha'],['same','Zulu'],['z','Resource']]);
+    assert.equal(events[0].start.dateTime,week+'T10:07:00+08:00');
+    assert.ok(events.every(event=>!('key' in event)&&!('serialized' in event)&&!('description' in event)&&!('attachments' in event)));
+    const data=f.sqlite.prepare('SELECT data FROM calendar_snapshots WHERE member_sub=? AND week_start=?').get('admin',week).data;
+    assert.equal(data,JSON.stringify(events),'stored payload contains precisely the public event records');
+    assert.ok(!data.includes('NEVER_STORE_PRIVATE_NOTES'));
+  });
+});
+
 test('successful and failed source refreshes wait ten minutes before automatic retry',async()=>{
   const {f,owner}=await team();await f.connect('admin');let fail=false;
   await mocked((url,options)=>fail?json({error:'unavailable'},503):normalGoogle(url,options),async calls=>{

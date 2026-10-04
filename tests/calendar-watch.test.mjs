@@ -13,7 +13,7 @@ const meeting=day=>({id:'event-'+day,iCalUID:'invite-'+day,summary:'Original res
 async function fixture(){
  const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
  const DB={prepare(sql){const statement=sqlite.prepare(sql);let values=[];return {bind(...args){values=args;return this;},async first(){return statement.get(...values)||null;},async all(){return {results:statement.all(...values)};},run(){return {meta:{changes:statement.run(...values).changes}};}};},async batch(statements){sqlite.exec('BEGIN');try{const results=statements.map(statement=>statement.run());sqlite.exec('COMMIT');return results;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
- const env={DB,EMAIL:{async send(){}},ASSETS:{async fetch(){return new Response('asset');}},APP_ORIGIN:origin,GOOGLE_CLIENT_ID:'fixture-client',GOOGLE_CLIENT_SECRET:'fixture-client-secret',CALENDAR_TOKEN_KEY:'11'.repeat(32),ADMIN_EMAIL:'roomly-admin@gmail.com',MAIL_FROM:'roomly@example.com'};
+ const env={DB,EMAIL:{async send(){}},ASSETS:{async fetch(){return new Response('asset');}},APP_ORIGIN:origin,GOOGLE_CLIENT_ID:'fixture-client',GOOGLE_CLIENT_SECRET:'fixture-client-secret',CALENDAR_TOKEN_KEY:'11'.repeat(32),ADMIN_EMAIL:'admin@example.com',MAIL_FROM:'roomly@example.com'};
  sqlite.exec("INSERT INTO members(sub,email,name,role,status,requested_at) VALUES('member','member@example.com','Member','member','approved',1); UPDATE room_settings SET location='Meeting room',revision=2 WHERE id=1;");
  sqlite.prepare("INSERT INTO calendar_connections(member_sub,refresh_cipher,version,status,updated_at,shared_calendars) VALUES(?,?,?,'connected',1,1)").run(sub,await sealToken(env,sub,'fixture-refresh'),version);
  const pending=[],handler=createHandler(async credential=>JSON.parse(credential));
@@ -41,6 +41,9 @@ function google({title='Original reservation',watch,events,calendarList}={}){
 const eventReads=calls=>calls.filter(call=>new URL(call.url).pathname.endsWith('/events'));
 function watchOwner(f){
  const connection=f.connection(),lease=crypto.randomUUID();f.sqlite.prepare('INSERT INTO calendar_snapshots(member_sub,week_start,room_revision,connection_version,lease_id,lease_until) VALUES(?,?,?,?,?,?) ON CONFLICT(member_sub,week_start) DO UPDATE SET lease_id=excluded.lease_id,lease_until=excluded.lease_until').run(sub,week,2,connection.version,lease,now()+120);return {...connection,watch_week:week,watch_lease:lease};
+}
+async function addSource(f,member){
+ f.sqlite.prepare("INSERT INTO members(sub,email,name,role,status,requested_at) VALUES(?,?,'Member','member','approved',1)").run(member,member+'@example.test');f.sqlite.prepare("INSERT INTO calendar_connections(member_sub,refresh_cipher,version,status,updated_at,shared_calendars) VALUES(?,?,?,'connected',1,1)").run(member,await sealToken(f.env,member,'fixture-refresh-'+member),version);
 }
 
 test('public notification route requires a valid channel binding but no browser session or Origin',async()=>{
@@ -261,23 +264,66 @@ test('continuous notifications fairly rotate one dirty week per tick so later ca
  }finally{Date.now=realNow;}
 });
 
-test('five shared-calendar sources refresh every cached week under a fifty-fetch invocation limit without losing queued work',async()=>{
+test('six shared-calendar sources refresh every cached week with at most two sources per maintenance tick without losing queued work',async()=>{
  const realNow=Date.now;let clock=Date.parse(week+'T12:00:00+08:00')+2*86400000;Date.now=()=>clock;
  try{
-  const f=await fixture(),members=[sub,...Array.from({length:4},(_,i)=>'member-'+i)],weeks=Array.from({length:5},(_,i)=>new Date(Date.parse(week+'T00:00:00Z')+i*7*86400000).toISOString().slice(0,10)),started=now();
-  for(const member of members.slice(1)){f.sqlite.prepare("INSERT INTO members(sub,email,name,role,status,requested_at) VALUES(?,?,'Member','member','approved',1)").run(member,member+'@example.test');f.sqlite.prepare("INSERT INTO calendar_connections(member_sub,refresh_cipher,version,status,updated_at,shared_calendars) VALUES(?,?,?,'connected',1,1)").run(member,await sealToken(f.env,member,'fixture-refresh-'+member),version);}
+  const f=await fixture(),members=[sub,...Array.from({length:5},(_,i)=>'member-'+i)],weeks=Array.from({length:5},(_,i)=>new Date(Date.parse(week+'T00:00:00Z')+i*7*86400000).toISOString().slice(0,10)),started=now();
+  for(const member of members.slice(1))await addSource(f,member);
   for(const [index,day] of weeks.entries())for(const member of members)f.sqlite.prepare('INSERT INTO calendar_snapshots(member_sub,week_start,room_revision,connection_version,data,synced_at,retry_at) VALUES(?,?,?,?,?,?,?)').run(member,day,2,version,JSON.stringify([{id:'cached-'+member+'-'+day,summary:'Cached reservation'}]),started-601-index,started-1-index);
   let invocationCalls=0,limitHits=0;const provider=google({calendarList:()=>json({items:[{id:'shared-a@example.test',accessRole:'reader'},{id:'shared-b@example.test',accessRole:'reader'}]}),title:'Fresh reservation'}),visited=new Set();
   await mocked((url,options,calls)=>{if(++invocationCalls>50){limitHits++;throw Error('fixture subrequest limit');}return provider(url,options,calls);},async calls=>{
-   for(let tick=0;tick<=weeks.length;tick++){
-    clock+=60000;invocationCalls=0;const before=calls.length;await calendarMaintenance(f.env,tick===0);assert.equal(limitHits,0,'each cron invocation must stay below the synthetic Free-plan external fetch limit');assert.ok(invocationCalls<=50);
-    const reads=eventReads(calls.slice(before)),days=new Set(reads.map(call=>new URL(call.url).searchParams.get('timeMin').slice(0,10)));assert.equal(days.size,1,'the ten-minute cleanup tick must not add extra fallback weeks');for(const day of days)visited.add(day);assert.equal(reads.length,members.length*3,'all five sources finish their primary and shared calendars for the chosen week');
+   for(let tick=0;tick<18;tick++){
+    clock+=60000;invocationCalls=0;const before=calls.length;await calendarMaintenance(f.env,tick%10===0);assert.equal(limitHits,0,'each cron invocation must stay below the synthetic Free-plan external fetch limit');assert.ok(invocationCalls<=50);
+    const invocation=calls.slice(before),tokens=invocation.filter(call=>new URL(call.url).hostname==='oauth2.googleapis.com'),sources=new Set(tokens.map(call=>new URLSearchParams(call.options.body).get('refresh_token')));assert.ok(sources.size>0&&sources.size<=2,'CPU budgeting must limit actual provider work to two different accounts per invocation');assert.equal(tokens.length,sources.size,'each selected account refreshes its access token once');
+    const reads=eventReads(invocation),days=new Set(reads.map(call=>new URL(call.url).searchParams.get('timeMin').slice(0,10)));assert.equal(days.size,1,'the ten-minute cleanup tick must not add extra fallback weeks');for(const day of days)visited.add(day);assert.equal(reads.length,sources.size*3,'every selected source completes primary and both shared calendars');
     const snapshots=f.sqlite.prepare('SELECT * FROM calendar_snapshots').all();assert.ok(snapshots.every(snapshot=>snapshot.error_code===null),'local invocation pressure must not falsely mark unrelated sources as failed');
-    if(tick<weeks.length-1)assert.ok(snapshots.some(snapshot=>JSON.parse(snapshot.data)[0].summary==='Cached reservation'),'unvisited complete data stays intact until its own tick');
+    if(tick<14)assert.ok(snapshots.some(snapshot=>JSON.parse(snapshot.data)[0].summary==='Cached reservation'),'unvisited complete data stays intact until that account and week can be processed');
    }
    assert.deepEqual([...visited].sort(),weeks);const snapshots=f.sqlite.prepare('SELECT s.*,c.change_revision AS source_revision FROM calendar_snapshots s JOIN calendar_connections c ON c.member_sub=s.member_sub').all();assert.equal(snapshots.length,members.length*weeks.length);assert.ok(snapshots.every(snapshot=>snapshot.synced_at>=started&&JSON.parse(snapshot.data).length===3&&JSON.parse(snapshot.data).every(event=>event.summary==='Fresh reservation')));assert.ok(snapshots.every(snapshot=>snapshot.change_revision===snapshot.source_revision),'list-watch bootstrap generations also finish without discarding any week');
   });
  }finally{Date.now=realNow;}
+});
+
+test('warmed six-source five-week caches remain fresh and fairly revisited across several background rotations',async()=>{
+ const realNow=Date.now;let clock=Date.parse(week+'T12:00:00+08:00')+2*86400000;Date.now=()=>clock;
+ try{
+  const f=await fixture(),members=[sub,...Array.from({length:5},(_,i)=>'member-'+i)],weeks=Array.from({length:5},(_,i)=>new Date(Date.parse(week+'T00:00:00Z')+i*7*86400000).toISOString().slice(0,10));for(const member of members.slice(1))await addSource(f,member);
+  await mocked(google({calendarList:()=>json({items:[{id:'shared-a@example.test',accessRole:'reader'},{id:'shared-b@example.test',accessRole:'reader'}]})}),async()=>{
+   // Initial reads and list-watch catch-up can align all deadlines. Exempt
+   // that first background pass, then measure the settled rotating schedule.
+   for(const day of weeks)await syncCalendars(f.env,day);await syncCalendars(f.env,week);const seeded=now(),rows=()=>f.sqlite.prepare('SELECT s.*,c.change_revision AS source_revision FROM calendar_snapshots s JOIN calendar_connections c ON c.member_sub=s.member_sub ORDER BY s.member_sub,s.week_start').all();assert.equal(rows().length,30);assert.ok(rows().every(row=>row.change_revision===row.source_revision));
+   let warmed=false;for(let tick=0;tick<30&&!warmed;tick++){clock+=60000;await calendarMaintenance(f.env,tick%10===0);warmed=rows().every(row=>row.synced_at>seeded);}assert.equal(warmed,true,'all thirty account-week caches must join the background rotation');
+   const visits=new Map(rows().map(row=>[row.member_sub+'|'+row.week_start,0]));
+   const assertFresh=snapshots=>{assert.equal(snapshots.length,30);for(const snapshot of snapshots){assert.equal(snapshot.error_code,null,'healthy rotation must not label a source as failed');assert.ok(now()-snapshot.synced_at<=1200,'each warmed snapshot stays within the twenty-minute feed freshness threshold');assert.equal(snapshot.change_revision,snapshot.source_revision,'ordinary fallback does not drop the acknowledged watch generation');assert.equal(JSON.parse(snapshot.data).length,3);}};
+   for(let tick=0;tick<60;tick++){
+    const before=rows();clock+=60000;assertFresh(before);await calendarMaintenance(f.env,tick%10===0);const after=rows();assertFresh(after);
+    for(const [index,row] of after.entries())if(row.synced_at>before[index].synced_at){const key=row.member_sub+'|'+row.week_start;visits.set(key,visits.get(key)+1);}
+   }
+   assert.ok([...visits.values()].every(count=>count>=3),'every source and week must participate repeatedly, rather than only the most active or current week');
+  });
+ }finally{Date.now=realNow;}
+});
+
+test('sources locked on another week cannot consume the source budget or block a different claimable week',async()=>{
+ const f=await fixture(),blocked=[sub,'blocked-member'],available='ready-member',thirdWeek=new Date(Date.parse(week+'T00:00:00Z')+14*86400000).toISOString().slice(0,10),started=now();for(const member of [blocked[1],available])await addSource(f,member);
+ const insert=f.sqlite.prepare('INSERT INTO calendar_snapshots(member_sub,week_start,room_revision,connection_version,data,synced_at,retry_at,lease_id,lease_until) VALUES(?,?,?,?,?,?,?,?,?)');
+ for(const member of blocked){for(const day of [week,nextWeek])insert.run(member,day,2,version,JSON.stringify([{summary:'Locked source reservation'}]),started-601,started-200,'',0);insert.run(member,thirdWeek,2,version,'[]',started,started+600,'existing-source-lease',started+120);}
+ insert.run(available,week,2,version,'[]',started,started+600,'',0);insert.run(available,nextWeek,2,version,JSON.stringify([{summary:'Available source old reservation'}]),started-601,started-1,'',0);
+ const before=f.sqlite.prepare("SELECT * FROM calendar_snapshots WHERE member_sub!=? ORDER BY member_sub,week_start").all(available);
+ await mocked(google({title:'Available source refreshed reservation'}),async calls=>{
+  await calendarMaintenance(f.env,false);const tokens=calls.filter(call=>new URL(call.url).hostname==='oauth2.googleapis.com');assert.equal(tokens.length,1);assert.equal(new URLSearchParams(tokens[0].options.body).get('refresh_token'),'fixture-refresh-'+available,'only the account without another-week ownership may contact Google');
+  assert.deepEqual(eventReads(calls).map(call=>new URL(call.url).searchParams.get('timeMin').slice(0,10)),[nextWeek],'an older but unclaimable week cannot keep winning the scheduler');const updated=f.sqlite.prepare('SELECT * FROM calendar_snapshots WHERE member_sub=? AND week_start=?').get(available,nextWeek);assert.equal(JSON.parse(updated.data)[0].summary,'Available source refreshed reservation');assert.equal(updated.error_code,null);
+  assert.deepEqual(f.sqlite.prepare("SELECT * FROM calendar_snapshots WHERE member_sub!=? ORDER BY member_sub,week_start").all(available),before,'blocked work retains both its complete data and its active ownership');
+ });
+});
+
+test('a rejected initial database claim emits a safe diagnostic while another source can finish and queued work can retry',async()=>{
+ const f=await fixture(),other='healthy-member',privateText='private-person@example.test private-office private-token https://private.example.test/calendar';await addSource(f,other);const prepare=f.env.DB.prepare.bind(f.env.DB),previousWarn=console.warn;let warnings=[];
+ f.env.DB.prepare=sql=>{const statement=prepare(sql);if(sql.startsWith('UPDATE calendar_snapshots SET lease_until=')){const bind=statement.bind,first=statement.first;let values=[];statement.bind=function(...args){values=args;return bind.apply(this,args);};statement.first=async function(){if(values[2]===sub)throw Error(privateText);return first.call(this);};}return statement;};console.warn=(...args)=>warnings.push(args);
+ try{
+  await mocked(google(),async calls=>{await syncCalendars(f.env,week);assert.deepEqual(warnings,[[JSON.stringify({event:'calendar_sync_failed',code:'runtime_error',providerStatus:0})]],'allSettled must not silently swallow a claim rejection or leak its exception text');const healthy=f.sqlite.prepare('SELECT * FROM calendar_snapshots WHERE member_sub=?').get(other);assert.equal(healthy.error_code,null);assert.equal(JSON.parse(healthy.data).length,1);assert.equal(eventReads(calls).length,1);assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_snapshots WHERE member_sub=? AND lease_until>0').get(sub).n,0);assert.ok(!JSON.stringify(f.sqlite.prepare('SELECT * FROM calendar_snapshots').all()).includes(privateText));});
+  f.env.DB.prepare=prepare;warnings=[];await mocked(google(),()=>syncCalendars(f.env,week));const recovered=f.sqlite.prepare('SELECT * FROM calendar_snapshots WHERE member_sub=? AND week_start=?').get(sub,week);assert.ok(recovered.synced_at>0);assert.equal(recovered.error_code,null);assert.equal(JSON.parse(recovered.data).length,1);assert.deepEqual(warnings,[]);
+ }finally{f.env.DB.prepare=prepare;console.warn=previousWarn;}
 });
 
 test('list-channel activation catches a shared calendar added after discovery but before its pending notification can be trusted',async()=>{

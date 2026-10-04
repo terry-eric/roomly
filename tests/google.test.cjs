@@ -91,7 +91,7 @@ test('disconnect stops only the current account and local view pauses browser po
 });
 
 test('ten-minute polling reads the feed, while the top sync button requests a fresh server sync without opening consent',async()=>{
- const data=base();data.sources[0]={email,state:'unauthorized',syncedAt:null,events:[]};const h=harness(()=>data);await h.sync();assert.deepEqual(h.intervalTimes,[600000]);assert.equal(h.el('#google-start').textContent,'同步');
+ const data=base();data.sources[0]={email,state:'unauthorized',syncedAt:null,events:[]};const h=harness(()=>data);await h.sync();assert.deepEqual(h.intervalTimes,[600000,60000]);assert.equal(h.el('#google-start').textContent,'同步');
  await h.el('#google-start').onclick();assert.equal(h.calls.at(-1).path,'calendar/sync');assert.equal(h.calls.at(-1).body.day,'2026-09-28');assert.equal(h.locations.length,0);assert.equal(h.views.at(-1),'overview');
  h.intervals[0]();await new Promise(resolve=>setImmediate(resolve));assert.equal(h.calls.at(-1).path,'calendar/feed?day=2026-09-28');
 });
@@ -377,4 +377,89 @@ test('hidden calendar notifications wait for visibility and local-only viewing i
  const h=harness(crossWeekFeed,true,'2026-10-03');await h.sync();const displayed=h.states.at(-1);h.context.document.hidden=true;h.emit('roomly:calendarchanged');h.emit('roomly:calendarchanged');await settle();assert.equal(h.calls.length,2);assert.equal(h.states.at(-1),displayed);
  h.context.document.hidden=false;h.emitDocument('visibilitychange');await settle();assert.deepEqual(h.calls.slice(2).map(call=>call.path),['calendar/feed?day=2026-10-03&cached=1','calendar/feed?day=2026-10-05&cached=1']);
  h.el('#google-demo').onclick();const count=h.calls.length;h.emit('roomly:calendarchanged');h.emitDocument('visibilitychange');await settle();assert.equal(h.calls.length,count);assert.equal(h.states.at(-1).local,true);
+});
+
+const minuteStatusCheck=h=>h.intervals[h.intervalTimes.indexOf(60000)]();
+function unresolvedFeed(state='stale'){
+ const data=base();data.sources[1]={...data.sources[1],state,syncedAt:state==='waiting'?null:1};return data;
+}
+
+test('unchanged meetings becoming ready are refreshed from cache each minute until stale or waiting status resolves',async()=>{
+ for(const state of ['stale','waiting']){
+  let completed=false;const h=harness(()=>completed?base():unresolvedFeed(state));await h.sync();const displayed=h.states.at(-1);
+  assert.match(h.el('#shared-calendar-list').innerHTML,state==='stale'?/資料逾時/:/等待首次同步/);
+  // No calendarRevision or source-change event is emitted; only the server's
+  // successful sync time/state changes, while the reservation stays identical.
+  completed=true;minuteStatusCheck(h);await settle();
+  assert.deepEqual(h.calls.map(call=>call.path),['calendar/feed?day=2026-09-28','calendar/feed?day=2026-09-28&cached=1']);
+  assert.notEqual(h.states.at(-1),displayed);assert.deepEqual(h.states.at(-1).events,displayed.events);
+  assert.doesNotMatch(h.el('#shared-calendar-list').innerHTML,/資料逾時|等待首次同步/);assert.doesNotMatch(h.el('#google-status').textContent,/來源尚未完成/);
+  const count=h.calls.length;for(let i=0;i<3;i++)minuteStatusCheck(h);await settle();assert.equal(h.calls.length,count,'ready sources stop the minute cache checks');
+  assert.equal(h.calls.some(call=>['calendar/sync','calendar/authorize'].includes(call.path)),false);assert.equal(h.locations.length,0);
+ }
+});
+
+test('ready, errored and missing-grant sources do not start minute status polling and retain the ten-minute fallback',async()=>{
+ for(const state of ['ready','error','unauthorized','reauthorize']){
+  const h=harness(()=>unresolvedFeed(state));await h.sync();const count=h.calls.length;
+  for(let i=0;i<3;i++)minuteStatusCheck(h);await settle();assert.equal(h.calls.length,count,state);
+  h.intervals[0]();await settle();assert.equal(h.calls.length,count+1);assert.equal(h.calls.at(-1).path,'calendar/feed?day=2026-09-28');
+  assert.equal(h.calls.some(call=>['calendar/sync','calendar/authorize'].includes(call.path)),false);
+ }
+});
+
+test('a stale covered week reads all visible weeks from cache sequentially and stops once both replies are ready',async()=>{
+ let release,completed=false;const pending=new Promise(resolve=>release=resolve);
+ const h=harness((path,body)=>{
+  const data=crossWeekFeed(path,body);if(!completed&&data.week!==week)data.sources[1].state='stale';
+  if(path.endsWith('&cached=1')&&data.week===week)return pending;return data;
+ },true,'2026-10-03');await h.sync();assert.match(h.el('#shared-calendar-list').innerHTML,/資料逾時/);
+ completed=true;minuteStatusCheck(h);await settle();assert.equal(h.calls.length,3);assert.equal(h.calls.at(-1).path,'calendar/feed?day=2026-10-03&cached=1');
+ for(let i=0;i<3;i++)minuteStatusCheck(h);await settle();assert.equal(h.calls.length,3,'a pending first week cannot start parallel or second-week requests');
+ release(crossWeekFeed('calendar/feed?day=2026-10-03&cached=1'));await settle();
+ assert.deepEqual(h.calls.slice(2).map(call=>call.path),['calendar/feed?day=2026-10-03&cached=1','calendar/feed?day=2026-10-05&cached=1']);
+ assert.doesNotMatch(h.el('#shared-calendar-list').innerHTML,/資料逾時/);minuteStatusCheck(h);await settle();assert.equal(h.calls.length,4);
+ assert.equal(h.calls.some(call=>['calendar/sync','calendar/authorize'].includes(call.path)),false);assert.equal(h.locations.length,0);
+});
+
+test('status checks during a normal reload coalesce and are discarded if that reload already resolves the source',async()=>{
+ for(const resolved of [false,true]){
+  let release,regular=0;const pending=new Promise(resolve=>release=resolve);
+  const h=harness(path=>path.endsWith('&cached=1')?base():++regular===1?unresolvedFeed():pending);
+  await h.sync();const updating=h.sync();await settle();
+  for(let i=0;i<4;i++)minuteStatusCheck(h);await settle();assert.equal(h.calls.length,2,'busy updates do not overlap');
+  release(resolved?base():unresolvedFeed());await updating;await settle();
+  assert.equal(h.calls.filter(call=>call.path.endsWith('&cached=1')).length,resolved?0:1,'one cache check is needed only if the completed reload still reports stale');
+  assert.doesNotMatch(h.el('#shared-calendar-list').innerHTML,/資料逾時/);assert.equal(h.el('#google-start').disabled,false);
+ }
+});
+
+test('minute status checks and calendar notifications during location saving share one queued cached reload',async()=>{
+ let release;const pending=new Promise(resolve=>release=resolve),data=unresolvedFeed();
+ const h=harness(async(path,body)=>{if(path==='calendar/location'){await pending;data.location=body.location;return {ok:true};}return data;});
+ await h.sync();h.el('#room-location').value='新地點';const saving=h.el('#location-filter').onsubmit({preventDefault(){}});
+ for(let i=0;i<3;i++){minuteStatusCheck(h);h.emit('roomly:calendarchanged');}await settle();assert.equal(h.calls.length,2);
+ release();await saving;await settle();assert.deepEqual(h.calls.map(call=>call.path),['calendar/feed?day=2026-09-28','calendar/location','calendar/feed?day=2026-09-28','calendar/feed?day=2026-09-28&cached=1']);
+ assert.equal(h.el('#room-location').value,'新地點');assert.equal(h.locations.length,0);
+});
+
+test('hidden and local-only boards skip minute status checks while pending or completed consent suppresses all polls',async()=>{
+ const hidden=harness(()=>unresolvedFeed());await hidden.sync();hidden.context.document.hidden=true;
+ for(let i=0;i<3;i++)minuteStatusCheck(hidden);await settle();assert.equal(hidden.calls.length,1);
+ hidden.context.document.hidden=false;minuteStatusCheck(hidden);await settle();assert.equal(hidden.calls.at(-1).path,'calendar/feed?day=2026-09-28&cached=1');
+ hidden.el('#google-demo').onclick();const count=hidden.calls.length;minuteStatusCheck(hidden);hidden.intervals[0]();hidden.emit('roomly:calendarchanged');await settle();assert.equal(hidden.calls.length,count);
+
+ let release;const pending=new Promise(resolve=>release=resolve),data=unresolvedFeed();data.sources[0].state='unauthorized';
+ const consent=harness(path=>path==='calendar/authorize'?pending:data);await consent.sync();const authorizing=consent.el('#google-connect').onclick();await settle();
+ for(let i=0;i<3;i++)minuteStatusCheck(consent);consent.intervals[0]();consent.emitDocument('visibilitychange');consent.emit('roomly:calendarchanged');await consent.sync();await settle();
+ assert.deepEqual(consent.calls.map(call=>call.path),['calendar/feed?day=2026-09-28','calendar/authorize']);
+ release(consentUrl);await authorizing;minuteStatusCheck(consent);consent.intervals[0]();await settle();assert.equal(consent.calls.length,2);assert.equal(consent.locations.length,1);
+});
+
+test('failed minute cache reads preserve stale meetings, retry on the next minute and never open consent',async()=>{
+ let fail=true;const h=harness(path=>{if(path.endsWith('&cached=1')){if(fail)throw Error('快取暫時無法讀取');return base();}return unresolvedFeed();});
+ await h.sync();const displayed=h.states.at(-1);minuteStatusCheck(h);await settle();
+ assert.equal(h.states.at(-1),displayed);assert.match(h.el('#google-status').textContent,/快取暫時/);assert.equal(h.calls.length,2,'cache failures do not immediately loop');assert.equal(h.el('#google-start').disabled,false);
+ fail=false;minuteStatusCheck(h);await settle();assert.equal(h.calls.length,3);assert.doesNotMatch(h.el('#shared-calendar-list').innerHTML,/資料逾時/);minuteStatusCheck(h);await settle();assert.equal(h.calls.length,3);
+ assert.equal(h.calls.some(call=>['calendar/sync','calendar/authorize'].includes(call.path)),false);assert.equal(h.locations.length,0);
 });

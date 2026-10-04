@@ -40,11 +40,13 @@ async function tokenKey(env:Env){requireSetup(env);const bytes=new Uint8Array((e
 export async function sealToken(env:Env,sub:string,token:string){const iv=crypto.getRandomValues(new Uint8Array(12));const cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv,additionalData:new TextEncoder().encode(sub)},await tokenKey(env),new TextEncoder().encode(token));return JSON.stringify([Array.from(iv),Array.from(new Uint8Array(cipher))]);}
 export async function openToken(env:Env,sub:string,cipher:string){const [iv,data]=JSON.parse(cipher);return new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM',iv:new Uint8Array(iv),additionalData:new TextEncoder().encode(sub)},await tokenKey(env),new Uint8Array(data)));}
 const normalize=(value:unknown)=>String(value||'').normalize('NFKC').replace(/\s+/gu,'').toLocaleLowerCase();
-export function roomMatch(event:EventRecord,location:string){const name=normalize(location);if(!name)return false;const resources=(event.attendees||[]).filter((a:EventRecord)=>a.resource&&normalize(a.displayName).includes(name));if(resources.length)return resources.some((a:EventRecord)=>a.responseStatus!=='declined');return normalize(event.location).includes(name);}
+function normalizedRoomMatch(event:EventRecord,name:string){if(!name)return false;const resources=(event.attendees||[]).filter((a:EventRecord)=>a.resource&&normalize(a.displayName).includes(name));if(resources.length)return resources.some((a:EventRecord)=>a.responseStatus!=='declined');return normalize(event.location).includes(name);}
+export function roomMatch(event:EventRecord,location:string){return normalizedRoomMatch(event,normalize(location));}
 function safeMeet(value:unknown){try{const url=new URL(String(value));return url.protocol==='https:'&&url.hostname==='meet.google.com'&&!url.username&&!url.password&&!url.port?url.href:'';}catch{return '';}}
 // Persist only room meetings and fields required by the board, never descriptions or attachments.
-export function minimizeEvent(event:EventRecord,location:string):EventRecord|null {
-  if(!roomMatch(event,location)||event.status==='cancelled'||event.attendees?.some((a:EventRecord)=>a.self&&a.responseStatus==='declined'))return null;
+export function minimizeEvent(event:EventRecord,location:string):EventRecord|null {return minimizeRoomEvent(event,normalize(location));}
+function minimizeRoomEvent(event:EventRecord,normalizedLocation:string):EventRecord|null {
+  if(!normalizedRoomMatch(event,normalizedLocation)||event.status==='cancelled'||event.attendees?.some((a:EventRecord)=>a.self&&a.responseStatus==='declined'))return null;
   const time=(v:any)=>v?.dateTime?{dateTime:String(v.dateTime).slice(0,50)}:v?.date?{date:String(v.date).slice(0,10)}:null;
   const start=time(event.start),end=time(event.end);if(!start||!end)return null;
   const identity=(v:any)=>({email:String(v?.email||'').slice(0,254),displayName:String(v?.displayName||'').slice(0,100)});
@@ -111,6 +113,7 @@ async function syncSource(env:Env,connection:Connection,week:string,room:Room,ma
   // neither change permission metadata nor commit over a later week's result.
   const deadline=AbortSignal.timeout(120000);
   const watchSource={...connection,watch_week:week,watch_lease:lease};
+  const normalizedLocation=normalize(room.location),encoder=new TextEncoder();
   try{
     const refresh=await openToken(env,connection.member_sub,connection.refresh_cipher),result=await tokenRequest(env,{grant_type:'refresh_token',refresh_token:refresh},deadline);
     if(typeof result.access_token!=='string')throw new CalendarError(502,'TOKEN_RESPONSE');
@@ -135,7 +138,7 @@ async function syncSource(env:Env,connection:Connection,week:string,room:Room,ma
           const page=await googleJSON(url.href,{headers:{Authorization:'Bearer '+result.access_token},signal:deadline});
           if(page.accessRole==='freeBusyReader'||page.accessRole==='none')throw new CalendarError(502,'NO_DETAILS');
           if(!Array.isArray(page.items||[]))throw new CalendarError(502,'EVENT_RESPONSE');
-          for(const event of page.items||[]){const safe=minimizeEvent(event,room.location);if(safe){if(key)safe.calendarKey=key;calendarItems.push(safe);payloadSize+=new TextEncoder().encode(JSON.stringify(safe)).length+1;if(payloadSize>1500000)throw new CalendarError(502,'SOURCE_LIMIT');}}
+          for(const event of page.items||[]){const safe=minimizeRoomEvent(event,normalizedLocation);if(safe){if(key)safe.calendarKey=key;calendarItems.push(safe);payloadSize+=encoder.encode(JSON.stringify(safe)).length+1;if(payloadSize>1500000)throw new CalendarError(502,'SOURCE_LIMIT');}}
           next=page.nextPageToken||'';if(typeof next!=='string'||(++pages>=10&&next))throw new CalendarError(502,'SOURCE_LIMIT');
         }while(next);
         items.push(...calendarItems);
@@ -157,8 +160,9 @@ async function syncSource(env:Env,connection:Connection,week:string,room:Room,ma
     }
     // Concurrent calendar reads may finish in either order. Stable ordering
     // prevents unchanged meetings from changing the board's data revision.
-    items.sort((a,b)=>JSON.stringify([a.calendarKey||'',a.id,a.start]).localeCompare(JSON.stringify([b.calendarKey||'',b.id,b.start]))||JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    const payload=JSON.stringify(items);if(new TextEncoder().encode(payload).length>1500000)throw new CalendarError(502,'SOURCE_LIMIT');
+    const sorted=items.map(event=>({key:JSON.stringify([event.calendarKey||'',event.id,event.start]),serialized:JSON.stringify(event)}));
+    sorted.sort((a,b)=>a.key.localeCompare(b.key)||a.serialized.localeCompare(b.serialized));
+    const payload='['+sorted.map(event=>event.serialized).join(',')+']';if(encoder.encode(payload).length>1500000)throw new CalendarError(502,'SOURCE_LIMIT');
     await env.DB.prepare(`UPDATE calendar_snapshots SET data=?,synced_at=?,retry_at=?,room_revision=?,connection_version=?,calendar_count=?,change_revision=?,lease_until=0,error_code=? WHERE member_sub=? AND week_start=? AND lease_id=? AND lease_until>? AND EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') AND EXISTS(SELECT 1 FROM calendar_connections WHERE member_sub=? AND version=? AND status='connected') AND EXISTS(SELECT 1 FROM room_settings WHERE id=1 AND revision=?)`).bind(payload,second(),second()+syncInterval,room.revision,connection.version,calendarIds.length,claimed.attempt_revision,partial?'PARTIAL_CALENDARS':null,connection.member_sub,week,lease,second(),connection.member_sub,connection.member_sub,connection.version,room.revision).run();
   }catch(error){
     syncFailureDiagnostic(error);
@@ -167,13 +171,17 @@ async function syncSource(env:Env,connection:Connection,week:string,room:Room,ma
     else await env.DB.prepare('UPDATE calendar_snapshots SET error_code=?,retry_at=?,lease_until=0 WHERE member_sub=? AND week_start=? AND lease_id=? AND lease_until>?').bind('SYNC_FAILED',second()+syncInterval,connection.member_sub,week,lease,second()).run();
   }
 }
-export async function syncCalendars(env:Env,week=taipeiWeek(),manual=false,dirtyOnly=false){
+export async function syncCalendars(env:Env,week=taipeiWeek(),manual=false,dirtyOnly=false,maxSources=Infinity){
   if(!calendarReady(env))return;
+  const limit=Number.isFinite(maxSources)?Math.max(0,Math.floor(maxSources)):null;if(limit===0)return;
   const room=await settings(env);if(!room.location)return;
   const time=second(),due=manual?time+syncInterval-manualCooldown:time;
-  const {results}=await env.DB.prepare(`SELECT c.* FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE m.status='approved' AND c.status='connected' ${dirtyOnly?'AND c.change_revision>COALESCE(s.change_revision,0)':''} AND (s.member_sub IS NULL OR (s.lease_until<=? AND (s.retry_at<=? OR s.room_revision!=? OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision))) ORDER BY COALESCE(s.retry_at,0),c.member_sub`).bind(week,time,due,room.revision).all<Connection>();
+  const {results}=await env.DB.prepare(`SELECT c.* FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE m.status='approved' AND c.status='connected' ${dirtyOnly?'AND c.change_revision>COALESCE(s.change_revision,0)':''} AND (s.member_sub IS NULL OR (s.lease_until<=? AND (s.retry_at<=? OR s.room_revision!=? OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision))) AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=? AND other.lease_until>?) ORDER BY COALESCE(s.retry_at,0),c.member_sub ${limit===null?'':'LIMIT ?'}`).bind(week,time,due,room.revision,week,time,...(limit===null?[]:[limit])).all<Connection>();
   // Keep Google request concurrency bounded while visiting every due source.
-  for(let i=0;i<results.length;i+=5)await Promise.allSettled(results.slice(i,i+5).map(c=>syncSource(env,c,week,room,manual)));
+  for(let i=0;i<results.length;i+=5){
+    const batch=await Promise.allSettled(results.slice(i,i+5).map(c=>syncSource(env,c,week,room,manual)));
+    for(const result of batch)if(result.status==='rejected')syncFailureDiagnostic(result.reason);
+  }
 }
 export async function calendarAPI(path:string,request:Request,env:Env,member:CalendarMember,readBody:()=>Promise<Record<string,unknown>>,verify:IdentityVerifier){
   if(member.status!=='approved')throw new CalendarError(403,'通過白名單後才能使用共用日曆。');
@@ -239,11 +247,11 @@ export async function calendarMaintenance(env:Env,fullSync=true){
   }
   if(!calendarReady(env))return;
   const time=second(),current=taipeiWeek();
-  // Every tick shares one provider request allowance. Select only one week
+  // Every tick shares one CPU and provider request allowance. Select one week
   // from regular due work and push generations, without a second fallback loop.
   // retry_at advances after both success and failure, so oldest eligible work
   // rotates fairly even when the current week receives continuous changes.
   // A missing current-week snapshot initializes once with priority zero.
-  const {results}=await env.DB.prepare(`SELECT week_start FROM (SELECT s.week_start,MIN(s.retry_at) AS attempted FROM calendar_snapshots s JOIN calendar_connections c ON c.member_sub=s.member_sub JOIN members m ON m.sub=c.member_sub JOIN room_settings r ON r.id=1 WHERE c.status='connected' AND m.status='approved' AND s.lease_until<=? AND (s.retry_at<=? OR s.room_revision!=r.revision OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision) GROUP BY s.week_start UNION ALL SELECT ? AS week_start,0 AS attempted WHERE EXISTS(SELECT 1 FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE c.status='connected' AND m.status='approved' AND s.member_sub IS NULL)) GROUP BY week_start ORDER BY MIN(attempted),week_start LIMIT 1`).bind(time,time,current,current).all<{week_start:string}>();
-  if(results[0])await syncCalendars(env,results[0].week_start,false,false);
+  const {results}=await env.DB.prepare(`SELECT week_start FROM (SELECT s.week_start,MIN(s.retry_at) AS attempted FROM calendar_snapshots s JOIN calendar_connections c ON c.member_sub=s.member_sub JOIN members m ON m.sub=c.member_sub JOIN room_settings r ON r.id=1 WHERE c.status='connected' AND m.status='approved' AND s.lease_until<=? AND (s.retry_at<=? OR s.room_revision!=r.revision OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision) AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=s.week_start AND other.lease_until>?) GROUP BY s.week_start UNION ALL SELECT ? AS week_start,0 AS attempted WHERE EXISTS(SELECT 1 FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE c.status='connected' AND m.status='approved' AND s.member_sub IS NULL AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=? AND other.lease_until>?))) GROUP BY week_start ORDER BY MIN(attempted),week_start LIMIT 1`).bind(time,time,time,current,current,current,time).all<{week_start:string}>();
+  if(results[0])await syncCalendars(env,results[0].week_start,false,false,2);
 }
