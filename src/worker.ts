@@ -1,5 +1,5 @@
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
-import {calendarAPI,CalendarError,calendarMaintenance,calendarReady,removeRevokedCalendars} from './calendar.ts';
+import {calendarAPI,CalendarError,calendarMaintenance,calendarReady,removeRevokedCalendars,syncCalendars,taipeiWeek} from './calendar.ts';
 import {calendarWebhook} from './calendar-watch.ts';
 
 const googleKeys = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'));
@@ -15,6 +15,23 @@ type CodeLoginCode='callback_error'|'malformed_code'|'missing_secret'|'invalid_c
 class CodeLoginError extends Error {code:CodeLoginCode;constructor(code:CodeLoginCode){super('Google login failed');this.code=code;}}
 function codeLoginFailure(phase:CodeLoginPhase,code:CodeLoginCode){console.warn(JSON.stringify({event:'login_failed',phase,code}));}
 function unexpectedCodeLoginFailure(phase:CodeLoginPhase,error:unknown){codeLoginFailure(phase,error instanceof CodeLoginError?error.code:phase==='identity_verify'?'jwt_invalid':'database_error');}
+function calendarQueueWork(value:unknown){
+  try{
+    if(!value||typeof value!=='object'||Array.isArray(value))return null;
+    const prototype=Object.getPrototypeOf(value),keys=Reflect.ownKeys(value);
+    if((prototype!==Object.prototype&&prototype!==null)||keys.length<1||keys.length>2||keys.some(key=>key!=='week'&&key!=='manual'))return null;
+    const property=Object.getOwnPropertyDescriptor(value,'week');
+    if(!property||!('value' in property)||typeof property.value!=='string'||property.value.length!==10)return null;
+    const manual=Object.getOwnPropertyDescriptor(value,'manual');
+    if(manual&&(!('value' in manual)||typeof manual.value!=='boolean'))return null;
+    const week=property.value;
+    if(taipeiWeek(week)!==week||Math.abs(Date.parse(week+'T00:00:00Z')-Date.parse(taipeiWeek()+'T00:00:00Z'))>56*86400000)return null;
+    return {week,manual:!!manual&&manual.value===true};
+  }catch{return null;}
+}
+async function manualCalendarSyncBlocked(env:Env,week:string){
+  return !!await env.DB.prepare("SELECT 1 FROM calendar_snapshots s JOIN calendar_connections c ON c.member_sub=s.member_sub AND c.version=s.connection_version JOIN members m ON m.sub=c.member_sub WHERE c.status='connected' AND m.status='approved' AND s.week_start!=? AND s.lease_until>? LIMIT 1").bind(week,now()).first();
+}
 class HttpError extends Error { status:number;constructor(status:number,message:string){super(message);this.status=status;} }
 const now=()=>Math.floor(Date.now()/1000);
 function normalizeEmail(value:unknown){if(typeof value!=='string')return '';const email=value.trim().toLowerCase();return email.length<=254&&/^[^\s@<>"']+@[a-z0-9.-]+\.[a-z]{2,63}$/i.test(email)?email:'';}
@@ -295,6 +312,24 @@ export function createHandler(verify:Verifier=verifyCredential){return {
     // safety refresh remains on ten-minute boundaries, including when idle.
     const fullSync=Math.floor(event.scheduledTime/60000)%10===0;
     ctx.waitUntil((async()=>{if(fullSync){await deliverNotifications(env);await env.DB.batch([env.DB.prepare('DELETE FROM sessions WHERE expires_at<=?').bind(now()),env.DB.prepare('DELETE FROM login_nonces WHERE expires_at<=?').bind(now())]);}await calendarMaintenance(env,fullSync);})());
+  },
+  async queue(batch:MessageBatch<unknown>,env:Env,_ctx:ExecutionContext){
+    for(const message of batch.messages){
+      const work=calendarQueueWork(message.body);
+      if(!work){message.ack();continue;}
+      try{
+        if(work.manual&&await manualCalendarSyncBlocked(env,work.week)){message.retry({delaySeconds:180});continue;}
+        // Queue jobs carry only a week. Approval, credentials, room settings,
+        // retry times and leases are re-read by the existing source selector.
+        await syncCalendars(env,work.week,work.manual,false,2);
+        // Also cover a lease claimed between the initial check and selection.
+        if(work.manual&&await manualCalendarSyncBlocked(env,work.week)){message.retry({delaySeconds:180});continue;}
+        message.ack();
+      }catch{
+        console.warn(JSON.stringify({event:'calendar_queue_failed',code:'runtime_error'}));
+        message.retry({delaySeconds:180});
+      }
+    }
   }
 };}
 export default createHandler();

@@ -44,19 +44,21 @@ test('popup fallback posts its nonce and refreshes a failed challenge before ret
  await initializations[1].callback({credential:'credential-2'});assert.deepEqual(posts[1],{credential:'credential-2',nonce:'nonce-2'});assert.deepEqual(navigations,['/roomly/?login=success']);
 });
 
-function gateHarness({loginStartUri='https://roomly.example.com/roomly/api/login/start',googleReady=false,search='',challengeReply}={}){
- const elements=new Map(),timers=[],requests=[],navigations=[],initializations=[],renders=[];let clock=1000,user=null;
+function gateHarness({loginStartUri='https://roomly.example.com/roomly/api/login/start',googleReady=false,search='',challengeReply,abortSignal=AbortSignal,abortController=AbortController,requestReply}={}){
+ const elements=new Map(),timers=[],requests=[],requestOptions=[],navigations=[],initializations=[],renders=[],deadlineTimers=new Map(),timerDelays=[];let clock=1000,user=null,timerId=0;
  const el=selector=>{
-  if(!elements.has(selector)){const listeners=new Map();elements.set(selector,{hidden:selector==='#server-sign-in',clientWidth:180,textContent:'',href:'',replaceChildren(){},addEventListener(name,fn){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(fn);},dispatch(name){for(const fn of listeners.get(name)||[])fn();}});}return elements.get(selector);
+  if(!elements.has(selector)){const listeners=new Map();elements.set(selector,{hidden:false,clientWidth:180,textContent:'',href:selector==='#server-sign-in'?'/roomly/api/login/start':'',replaceChildren(){},addEventListener(name,fn){if(!listeners.has(name))listeners.set(name,[]);listeners.get(name).push(fn);},dispatch(name){for(const fn of listeners.get(name)||[])fn();}});}return elements.get(selector);
  };
  const google={accounts:{id:{initialize:options=>initializations.push(options),renderButton:(host,options)=>renders.push(options)}}};
- const context={document:{body:{dataset:{page:'gate'}},hidden:false,querySelector:el},fetch:async url=>{
-  requests.push(url);if(url.endsWith('/me'))return user?{ok:true,json:async()=>({...user})}:{ok:false,status:401,json:async()=>({error:'登入'})};
+ const context={document:{body:{dataset:{page:'gate'}},hidden:false,querySelector:el},fetch:async(url,options)=>{
+  requests.push(url);requestOptions.push(options);if(requestReply){const reply=await requestReply(url,options);if(reply)return reply;}
+  if(url.endsWith('/me'))return user?{ok:true,json:async()=>({...user})}:{ok:false,status:401,json:async()=>({error:'登入'})};
   if(url.endsWith('/challenge'))return {ok:true,json:async()=>challengeReply?challengeReply():({clientId:'client',nonce:'fixture-nonce',loginUri:'https://roomly.example.com/roomly/api/login/redirect',loginStartUri})};
   throw Error('Unexpected automatic request: '+url);
- },Date:{now:()=>clock},AbortSignal,location:{origin:'https://roomly.example.com',pathname:'/roomly/',search,replace:url=>navigations.push(url)},setInterval:fn=>timers.push(fn)};
+ },Date:{now:()=>clock},AbortSignal:abortSignal,AbortController:abortController,location:{origin:'https://roomly.example.com',pathname:'/roomly/',search,replace:url=>navigations.push(url)},setInterval:fn=>timers.push(fn),setTimeout:(fn,ms)=>{const id=++timerId;deadlineTimers.set(id,fn);timerDelays.push(ms);return id;},clearTimeout:id=>deadlineTimers.delete(id)};
+ if(abortSignal===null)delete context.AbortSignal;if(abortController===null)delete context.AbortController;
  if(googleReady)context.google=google;context.window=context;vm.createContext(context);vm.runInContext(fs.readFileSync(require.resolve('../access.js'),'utf8'),context);
- return {el,timers,requests,navigations,initializations,renders,context,access:context.RoomlyAccess,google,setUser(value){user=value;},advance(ms){clock+=ms;}};
+ return {el,timers,requests,requestOptions,navigations,initializations,renders,deadlineTimers,timerDelays,context,access:context.RoomlyAccess,google,setUser(value){user=value;},advance(ms){clock+=ms;},expireRequests(){for(const fn of [...deadlineTimers.values()])fn();}};
 }
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 
@@ -69,7 +71,46 @@ test('server Google login is a same-window native link without GIS or automatic 
   assert.equal(h.el('#server-sign-in').hidden,false);assert.equal(h.el('#access-status').textContent,message);assert.equal(h.initializations.length,0);
  }
  const html=fs.readFileSync(require.resolve('../auth.html'),'utf8'),anchor=/<a id="server-sign-in"[^>]*>/.exec(html)[0];
- assert.match(anchor,/href="\/roomly\/api\/login\/start"/);assert.doesNotMatch(anchor,/target=|onclick=/);
+ assert.match(anchor,/href="\/roomly\/api\/login\/start"/);assert.doesNotMatch(anchor,/target=|onclick=|\bhidden\b/);
+});
+
+test('older browsers without AbortSignal.timeout can load access and offer native Google login',async()=>{
+ for(const options of [{abortSignal:{}},{abortSignal:null,abortController:null}]){
+  const h=gateHarness(options);await h.access.ready;await settle();
+  assert.equal(h.el('#server-sign-in').hidden,false);assert.equal(h.el('#server-sign-in').href,'/roomly/api/login/start');
+  assert.equal(h.el('#sign-in-button').hidden,true);assert.deepEqual(h.navigations,[]);assert.equal(h.initializations.length,0);
+  assert.deepEqual(h.requests,['/roomly/api/me','/roomly/api/challenge']);assert.equal(h.deadlineTimers.size,0);assert.deepEqual(h.timerDelays,[15000,15000]);
+  assert.ok(h.requestOptions.every(options=>options.credentials==='same-origin'));
+ }
+});
+
+test('native Google link remains available when an access request cannot finish',async()=>{
+ const h=gateHarness({abortSignal:null,abortController:null,requestReply:()=>new Promise(()=>{})});await settle();
+ assert.equal(h.el('#server-sign-in').hidden,false);assert.equal(h.el('#server-sign-in').href,'/roomly/api/login/start');
+ h.expireRequests();await h.access.ready;assert.equal(h.deadlineTimers.size,0);assert.match(h.el('#access-status').textContent,/暫時無法連線/);assert.deepEqual(h.navigations,[]);
+});
+
+test('fallback request deadline covers JSON bodies and cancels fetch when supported',async()=>{
+ for(const abortController of [AbortController,null]){
+  const h=gateHarness({abortSignal:null,abortController});await h.access.ready;await settle();
+  let requestSignal;h.context.fetch=async(url,options)=>{requestSignal=options.signal;return {ok:true,json:()=>new Promise(()=>{})};};
+  const failed=assert.rejects(h.access.request('calendar/feed'),/暫時無法連線/);await settle();
+  assert.equal(h.deadlineTimers.size,1);assert.equal(h.timerDelays.at(-1),60000);
+  h.expireRequests();await failed;assert.equal(h.deadlineTimers.size,0);
+  if(abortController)assert.equal(requestSignal.aborted,true);else assert.equal(requestSignal,undefined);
+  assert.deepEqual(h.navigations,[]);
+ }
+});
+
+test('fallback deadlines clear after body success and preserve HTTP and parsing failures',async()=>{
+ const h=gateHarness({abortSignal:{}});await h.access.ready;await settle();let finishBody;
+ h.context.fetch=async()=>({ok:true,json:()=>new Promise(resolve=>{finishBody=resolve;})});
+ const pending=h.access.request('calendar/feed');await settle();assert.equal(h.deadlineTimers.size,1);
+ finishBody({ok:true});assert.equal((await pending).ok,true);assert.equal(h.deadlineTimers.size,0);
+ h.context.fetch=async()=>({ok:false,status:403,json:async()=>({error:'未取得資格'})});
+ await assert.rejects(h.access.request('me'),error=>error.status===403&&error.message==='未取得資格');assert.equal(h.deadlineTimers.size,0);
+ h.context.fetch=async()=>{throw Error('offline');};await assert.rejects(h.access.request('me'),/暫時無法連線/);assert.equal(h.deadlineTimers.size,0);
+ h.context.fetch=async()=>({ok:true,json:async()=>{throw Error('invalid JSON');}});await assert.rejects(h.access.request('me'),/invalid JSON/);assert.equal(h.deadlineTimers.size,0);
 });
 
 test('server login remains clickable after expired, cancelled or failed returns and idle polling never starts OAuth',async()=>{

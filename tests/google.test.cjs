@@ -106,6 +106,24 @@ test('a failed manual request keeps the displayed meetings, reports the error an
  const h=harness(path=>{if(path==='calendar/sync')throw Error('Google 暫時無法讀取');return base();});await h.sync();const displayed=h.states.at(-1);await h.el('#google-start').onclick();assert.equal(h.states.at(-1),displayed);assert.match(h.el('#google-status').textContent,/暫時無法/);assert.match(h.el('#shared-calendar-status').textContent,/暫時無法/);assert.match(h.notifications.at(-1),/暫時無法/);assert.equal(h.el('#google-start').disabled,false);
 });
 
+test('queued manual work reports scheduling without advancing successful source times and limits duplicate taps',async()=>{
+ const data=base();data.sources[0].state='stale';data.sources[0].syncedAt=1700000000;let queued=false;
+ const h=harness(path=>path==='calendar/sync'?{...data,syncQueued:queued=true}:{...data,syncQueued:false});let clock=100000;
+ h.context.Date=class extends Date{static now(){return clock;}};
+ await h.sync();const before=h.el('#own-sync-status').textContent;await h.el('#google-start').onclick();
+ assert.equal(queued,true);assert.match(h.el('#google-status').textContent,/已安排背景同步/);assert.match(h.notifications.at(-1),/完成後會更新/);
+ assert.equal(h.el('#own-sync-status').textContent,before);assert.match(h.el('#own-sync-status').textContent,/資料逾時/);assert.doesNotMatch(h.el('#own-sync-status').textContent,/同步成功/);
+ const count=h.calls.length;await h.el('#google-start').onclick();assert.equal(h.calls.length,count);
+ clock+=30000;await h.el('#google-start').onclick();assert.equal(h.calls.filter(call=>call.path==='calendar/sync').length,2);
+ data.sources[0].state='ready';data.sources[0].syncedAt++;await h.sync();assert.match(h.el('#own-sync-status').textContent,/同步成功/);
+});
+
+test('any queued visible week is reported while malformed queue flags fail safely',async()=>{
+ const h=harness((path,body)=>({...crossWeekFeed(path,body),syncQueued:(body?.day||'')==='2026-10-05'}),true,'2026-10-03');
+ await h.el('#google-start').onclick();assert.match(h.el('#google-status').textContent,/已安排背景同步/);assert.equal(h.states.at(-1).events.length,3);
+ const bad=harness(()=>({...base(),syncQueued:'yes'}));await bad.sync();assert.match(bad.el('#google-status').textContent,/回應不正確/);assert.ok(!bad.states.at(-1).events?.length);
+});
+
 const futureEvent=(uid,start,end)=>({...event,id:uid,iCalUID:uid,start:{dateTime:start},end:{dateTime:end}});
 function crossWeekFeed(path,body){
  const date=body?.day||new URL('https://roomly.test/'+path).searchParams.get('day'),data=base();data.week=core.weekDays(date)[0];

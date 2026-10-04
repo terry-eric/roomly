@@ -16,6 +16,10 @@
   },
   "d1_databases": [{"binding":"DB","database_name":"roomly-access","database_id":"00000000-0000-0000-0000-000000000000"}],
   "triggers": {"crons":["* * * * *"]},
+  "queues": {
+    "producers": [{"binding":"CALENDAR_SYNC_QUEUE","queue":"roomly-calendar-sync"}],
+    "consumers": [{"queue":"roomly-calendar-sync","max_batch_size":1,"max_batch_timeout":1,"max_concurrency":1,"max_retries":3,"retry_delay":180}]
+  },
   "assets": {
     "binding": "ASSETS",
     "run_worker_first": true,

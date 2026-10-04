@@ -5,20 +5,35 @@
   const api='/roomly/api/';let info=null,loginBusy=false,loginStarted=false,loginPreparedAt=0,signInWidth=0,signInSizer=null,loginMode='',refreshGeneration=0;
   const status=text=>{const el=document.querySelector('#access-status');if(el)el.textContent=text;};
   async function request(path,body){
-    let response;try{response=await fetch(api+path,{method:body?'POST':'GET',credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,signal:AbortSignal.timeout(path.startsWith('calendar/')?60000:15000)});}catch{throw Error('暫時無法連線，請稍後重試。');}
-    const data=await response.json();if(!response.ok){const error=Error(data.error||'操作未完成。');error.status=response.status;throw error;}return data;
+    const timeout=path.startsWith('calendar/')?60000:15000,message='暫時無法連線，請稍後重試。';
+    let signal,timer=null,deadline=null;
+    if(typeof AbortSignal!=='undefined'&&typeof AbortSignal.timeout==='function')signal=AbortSignal.timeout(timeout);
+    else{
+      const controller=typeof AbortController==='function'?new AbortController():null;
+      if(controller)signal=controller.signal;
+      // Keep the entire response bounded even without fetch cancellation.
+      deadline=new Promise((resolve,reject)=>{timer=setTimeout(()=>{try{if(controller)controller.abort();}finally{reject(Error(message));}},timeout);});
+    }
+    try{
+      let response;try{
+        const pending=fetch(api+path,{method:body?'POST':'GET',credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined,signal});
+        response=deadline?await Promise.race([pending,deadline]):await pending;
+      }catch{throw Error(message);}
+      const pendingJSON=response.json(),data=deadline?await Promise.race([pendingJSON,deadline]):await pendingJSON;
+      if(!response.ok){const error=Error(data.error||'操作未完成。');error.status=response.status;throw error;}return data;
+    }finally{if(timer!==null)clearTimeout(timer);}
   }
   async function logout(){
-    try{await request('logout',{});window.google?.accounts?.id?.disableAutoSelect();location.replace('/roomly/');}catch(error){status(error.message);if(page==='board')alert(error.message);}
+    try{await request('logout',{});if(window.google&&window.google.accounts&&window.google.accounts.id)window.google.accounts.id.disableAutoSelect();location.replace('/roomly/');}catch(error){status(error.message);if(page==='board')alert(error.message);}
   }
-  document.querySelector('#sign-out')?.addEventListener('click',logout);
+  const signOut=document.querySelector('#sign-out');if(signOut)signOut.addEventListener('click',logout);
   function showSignIn(mode){
     const server=document.querySelector('#server-sign-in');if(server){server.href=api+'login/start';server.hidden=mode!=='server';}
     const host=document.querySelector('#sign-in-button');if(host)host.hidden=mode!=='gis';
     const fallback=document.querySelector('#sign-in-fallback');if(fallback)fallback.hidden=true;
   }
   function loginStatus(){
-    const outcome=/(?:^\?|&)login=(expired|cancelled|failed)(?:&|$)/.exec(location.search||'')?.[1];
+    const matched=/(?:^\?|&)login=(expired|cancelled|failed)(?:&|$)/.exec(location.search||''),outcome=matched?matched[1]:undefined;
     status(outcome==='expired'?'登入已失效，請再按一次 Google 登入。':outcome==='cancelled'?'你已取消登入，可以再試一次。':outcome==='failed'?'Google 登入暫時未完成，請再試一次。':'登入後會確認白名單資格。');
   }
   function renderSignIn(){
@@ -41,9 +56,9 @@
       if(typeof ResizeObserver==='function'&&!signInSizer){signInSizer=new ResizeObserver(renderSignIn);signInSizer.observe(document.querySelector('#sign-in-button'));}
       loginStatus();
     };
-    if(window.google?.accounts?.id){initialize();return;}
-    const script=document.querySelector('#gis');script?.addEventListener('load',initialize,{once:true});
-    script?.addEventListener('error',()=>{if(loginMode==='gis'&&!info)status('Google 登入元件無法載入，請確認網路後重新整理。');},{once:true});
+    if(window.google&&window.google.accounts&&window.google.accounts.id){initialize();return;}
+    const script=document.querySelector('#gis');if(script){script.addEventListener('load',initialize,{once:true});
+    script.addEventListener('error',()=>{if(loginMode==='gis'&&!info)status('Google 登入元件無法載入，請確認網路後重新整理。');},{once:true});}
     status('正在載入 Google 登入…');
   }
   async function signIn(){
@@ -54,7 +69,7 @@
       const challenge=await request('challenge');
       if(info){loginStarted=false;return;}
       if(challenge.loginStartUri){
-        if(challenge.loginStartUri!==location.origin+api+'login/start')throw Error('Google 登入設定不正確，請聯絡管理員。');
+        if(challenge.loginStartUri!==location.origin+api+'login/start'){showSignIn('');throw Error('Google 登入設定不正確，請聯絡管理員。');}
         // A native same-window link creates fresh state/PKCE only on user click.
         // It works without GIS and returns through a first-party GET callback.
         loginMode='server';showSignIn(loginMode);loginStatus();return;
@@ -75,7 +90,7 @@
   async function refresh(){
     const run=++refreshGeneration;
     try{
-      const user=await request('me');if(run!==refreshGeneration)return info?.status==='approved';
+      const user=await request('me');if(run!==refreshGeneration)return !!info&&info.status==='approved';
       const previous=info;info=user;
       if(info.status!=='approved'){
         if(page!=='gate'){location.replace('/roomly/');return false;}displayGate(info);return false;
@@ -85,18 +100,18 @@
       for(const selector of ['#admin-link','#settings-admin-link']){const link=document.querySelector(selector);if(link){link.hidden=!info.isAdmin;link.textContent=info.pending?`白名單管理（${info.pending} 筆待審核）`:'白名單管理';}}
       const account=document.querySelector('#current-account');if(account)account.textContent=info.email;
       const role=document.querySelector('#account-role');if(role)role.textContent=info.isAdmin?'管理員 · 可設定地點與管理白名單':'一般成員 · 地點與白名單由管理員設定';
-      if(page==='board'&&previous?.status==='approved'&&typeof window.dispatchEvent==='function'&&typeof CustomEvent==='function'){
+      if(page==='board'&&previous&&previous.status==='approved'&&typeof window.dispatchEvent==='function'&&typeof CustomEvent==='function'){
         if(typeof previous.sourcesRevision==='string'&&typeof info.sourcesRevision==='string'&&previous.sourcesRevision!==info.sourcesRevision)window.dispatchEvent(new CustomEvent('roomly:sourceschanged',{detail:{sourcesRevision:info.sourcesRevision}}));
         else if(typeof previous.calendarRevision==='string'&&typeof info.calendarRevision==='string'&&previous.calendarRevision!==info.calendarRevision)window.dispatchEvent(new CustomEvent('roomly:calendarchanged',{detail:{calendarRevision:info.calendarRevision}}));
       }
       return true;
     }catch(error){
-      if(run!==refreshGeneration)return info?.status==='approved';
+      if(run!==refreshGeneration)return !!info&&info.status==='approved';
       if(error.status===401){if(page==='gate'){info=null;readySignIn();return false;}location.replace('/roomly/');return false;}
       status(error.message);return false;
     }
   }
-  document.querySelector('#check-access')?.addEventListener('click',()=>{void refresh();});
+  const checkAccess=document.querySelector('#check-access');if(checkAccess)checkAccess.addEventListener('click',()=>{void refresh();});
   const initial=refresh();
   window.RoomlyAccess={request,ensureAllowed:refresh,ready:initial,user:()=>info};
   setInterval(()=>{if(!document.hidden)void refresh();},page==='gate'?30000:60000);

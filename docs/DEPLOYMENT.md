@@ -123,9 +123,12 @@ npx wrangler d1 migrations apply roomly-access --local --config wrangler.local.j
 ```sh
 npx wrangler login
 npx wrangler d1 create roomly-access
+npx wrangler queues create roomly-calendar-sync
 ```
 
 將建立結果的 `database_id` 填入 **`wrangler.jsonc`** 的 D1 設定，保留 binding 名稱 `DB`。本機設定檔的全零 ID 是本機範例，不可拿來當雲端資料庫 ID。[Cloudflare D1 入門](https://developers.cloudflare.com/d1/get-started/)
+
+同步佇列名稱須與 `wrangler.jsonc` 的 `queues.producers` / `queues.consumers` 一致。範例會使用同一個 Worker 消費佇列，每個工作最多處理兩個來源，分開執行日曆同步，避免把 Google 讀取與處理都塞進 cron。佇列訊息只有週次，不含帳號、會議或密鑰。Queues 已支援 Free 方案；依自己的使用量查看 [Queues 配額與價格](https://developers.cloudflare.com/queues/platform/pricing/)，不要把免費配額當成無限資源。
 
 同時修改 `wrangler.jsonc`：
 
@@ -197,6 +200,8 @@ npx wrangler d1 migrations apply roomly-access --remote
 | 管理員仍是待審 | `ADMIN_EMAIL` 是否等於登入帳號，是否為 Gmail 或 Google 驗證的 Workspace 身分 |
 | 登入成功但沒有會議 | 來源授權狀態、日期範圍、日曆讀取權限及活動地點是否相符 |
 | 同步失敗 | 檢查 Worker 設定、有效 secrets、D1 migrations 和 Google / Cloudflare 額度；詳見共用日曆文件 |
+| 來源長時間顯示資料逾時 | 確認已建立同步 Queue、producer / consumer 已部署，查看 cron 與 queue invocation 的結果。送入佇列不等於已同步；最後成功時間須在資料保存後才前進 |
+| 登入頁停住、Google 沒開啟 | 按「使用 Google 帳號登入」的一般連結；此入口不依賴 Google 元件或新款瀏覽器的逾時 API。若 Google 本身拒絕該瀏覽器，改用 Google 支援的最新版瀏覽器；電視內建瀏覽器仍需實機確認 |
 | 改程式後本機仍是舊畫面 | 重啟 `npm run dev` 以重建靜態檔；若曾安裝 PWA，也確認瀏覽器已更新快取 |
 | Windows 無法綁定連接埠，顯示 `10013` / `EACCES` | 該連接埠可能被 Windows 保留或其他程式占用。預設使用 `3000`；若自行改埠，須一起修改 `dev` script 的 `--port`、`wrangler.local.jsonc` 的 `dev.port` / `APP_ORIGIN`、本機變數及 Google 的 origin / 兩個 redirect URI |
 

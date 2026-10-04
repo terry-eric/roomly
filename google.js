@@ -2,6 +2,7 @@
 (() => {
   const A=RoomApp,access=window.RoomlyAccess,$=s=>document.querySelector(s);
   let feed=null,generation=0,activeRun=0,busy=false,live=true,authorizing=false,locationDirty=false,locationSaving=false,locationFeedback=null,cachedRefreshPending=false,statusRefreshPending=false;
+  const manualQueuedAt=new Map();
   const syncMessage='日曆變更時自動同步，每 10 分鐘補查';
   const callbackMessages={connected:'我的日曆已完整授權，後端會自動同步符合會議室地點的邀請。',cancelled:'你已取消日曆授權，仍可查看已同步的共用會議。',scope:'請同意日曆活動唯讀及日曆清單唯讀兩項權限，才能完成授權。',account:'請授權與網站登入相同的 Google 帳號。',refresh:'尚未取得背景同步授權，請重新授權。',failed:'Google 日曆授權未完成，請稍後重試。'};
   const returnParams=new URLSearchParams(location.search||''),calendarOutcome=returnParams.get('calendar');
@@ -13,7 +14,7 @@
     catch{autoAuthorizePending=false;}
   }
   const panel=$('#calendar-settings');
-  panel.innerHTML=`<span class="integration-icon google">G</span><span class="pill neutral" id="google-badge">共用看板</span><h2>我的日曆授權</h2><p class="muted">登入並通過白名單後，會接著要求 Google 日曆活動唯讀及日曆清單唯讀兩項權限，須完整同意才能完成授權。主要日曆及列表中未隱藏、可讀取活動詳情的共用日曆，會依會議室地點彙整到同一個看板。</p><div class="google-actions"><button class="primary" id="google-connect" hidden>重新授權日曆</button><button class="quiet outlined" id="google-demo">本機資料</button></div><p id="google-shared-hint" class="small muted" hidden>日曆授權尚未完成或需要更新。請在 Google 同意頁完整同意「日曆活動唯讀」及「日曆清單唯讀」兩項權限；少任何一項都無法完成授權。若曾取消或未完成，可按「重新授權日曆」再試一次。只有你在 Google 同意後，才會分享符合地點的活動。</p><p id="google-status" class="google-status" role="status">正在載入共用看板…</p><div class="google-actions"><button class="primary" id="google-sync">同步</button><button class="quiet" id="google-disconnect" disabled>停止分享我的日曆</button></div><p class="small muted">日曆變更時自動同步，每 10 分鐘補查，關閉網頁後仍會更新。看板每分鐘檢查後端是否有新資料。按「同步」可立即更新；連續操作會使用 30 秒內的結果。預約請在 <a href="https://calendar.google.com/" target="_blank" rel="noopener noreferrer">Google 日曆</a>建立。<a href="privacy.html" target="_blank" rel="noopener">日曆分享與隱私說明 ↗</a></p>`;
+  panel.innerHTML=`<span class="integration-icon google">G</span><span class="pill neutral" id="google-badge">共用看板</span><h2>我的日曆授權</h2><p class="muted">登入並通過白名單後，會接著要求 Google 日曆活動唯讀及日曆清單唯讀兩項權限，須完整同意才能完成授權。主要日曆及列表中未隱藏、可讀取活動詳情的共用日曆，會依會議室地點彙整到同一個看板。</p><div class="google-actions"><button class="primary" id="google-connect" hidden>重新授權日曆</button><button class="quiet outlined" id="google-demo">本機資料</button></div><p id="google-shared-hint" class="small muted" hidden>日曆授權尚未完成或需要更新。請在 Google 同意頁完整同意「日曆活動唯讀」及「日曆清單唯讀」兩項權限；少任何一項都無法完成授權。若曾取消或未完成，可按「重新授權日曆」再試一次。只有你在 Google 同意後，才會分享符合地點的活動。</p><p id="google-status" class="google-status" role="status">正在載入共用看板…</p><div class="google-actions"><button class="primary" id="google-sync">同步</button><button class="quiet" id="google-disconnect" disabled>停止分享我的日曆</button></div><p class="small muted">日曆變更時自動同步，每 10 分鐘補查，關閉網頁後仍會更新。看板每分鐘檢查後端是否有新資料。按「同步」可安排更新，完成後來源時間會更新；30 秒內不會重複安排。預約請在 <a href="https://calendar.google.com/" target="_blank" rel="noopener noreferrer">Google 日曆</a>建立。<a href="privacy.html" target="_blank" rel="noopener">日曆分享與隱私說明 ↗</a></p>`;
   panel.parentElement.prepend(panel);
   $('#shared-calendars').hidden=false;$('#location-filter').hidden=false;
   $('#people .notice').textContent='依所選日期彙整主辦人與受邀參與者。受邀與回覆狀態不代表實際出席。';
@@ -81,6 +82,8 @@
     if(!access?.request){status('共用看板需要從正式網站登入使用。');return;}
     if(authorizing)return;
     if(manual&&(busy||locationSaving))return;
+    const manualKey=manual?[...new Set((A.days?A.days():RoomCore.boardDays(A.day())).map(day=>RoomCore.weekDays(day)[0]))].join(','):'';
+    if(manual&&manualQueuedAt.has(manualKey)&&Date.now()-manualQueuedAt.get(manualKey)<30000){A.notify?.('同步已安排，完成後會更新來源時間。請稍候再試。');return;}
     const run=++generation;activeRun=run;live=true;busy=true;
     $('#google-sync').disabled=$('#google-start').disabled=$('#refresh-sources').disabled=true;
     $('#google-start').textContent='同步中…';
@@ -98,7 +101,7 @@
         feeds.push(data);
       }
       if(run!==generation)return;
-      if(feeds.some((data,index)=>!Array.isArray(data.sources)||data.week!==weeks[index]||typeof data.location!=='string'||data.location!==feeds[0].location||data.configured!==feeds[0].configured||data.email!==feeds[0].email||data.isAdmin!==feeds[0].isAdmin))throw Error('共用看板回應不正確，請再試一次。');
+      if(feeds.some((data,index)=>!Array.isArray(data.sources)||data.week!==weeks[index]||typeof data.location!=='string'||data.location!==feeds[0].location||data.configured!==feeds[0].configured||data.email!==feeds[0].email||data.isAdmin!==feeds[0].isAdmin||(data.syncQueued!==undefined&&typeof data.syncQueued!=='boolean')))throw Error('共用看板回應不正確，請再試一次。');
       const sourcesForRange=[];
       for(const source of feeds[0].sources){
         const parts=feeds.map(data=>data.sources.find(s=>s.email===source.email));
@@ -118,14 +121,17 @@
         const calendarCount=parts.every(s=>Number.isInteger(s.calendarCount)&&s.calendarCount>=0)?Math.min(...parts.map(s=>s.calendarCount)):undefined;
         sourcesForRange.push({...source,state,sharedCalendars,calendarCount,syncedAt:Math.min(...parts.map(s=>s.syncedAt||0))||null,events:[...events.values()]});
       }
-      const data={...feeds[0],sources:sourcesForRange};
+      const data={...feeds[0],syncQueued:feeds.some(data=>data.syncQueued===true),sources:sourcesForRange};
+      if(manual&&data.syncQueued)manualQueuedAt.set(manualKey,Date.now());
       feed=data;statusRefreshPending=false;renderSources();
       const sources=data.sources.map(s=>({calendar:{id:s.email,name:s.email,kind:'person'},events:s.events}));
       const events=RoomCore.mergeGoogle(sources,{room:room()}).filter(e=>e.roomIds.length&&RoomCore.overlapsDays(Date.parse(e.startISO),Date.parse(e.endISO),days));
       const unresolved=data.sources.filter(s=>s.state!=='ready').length;
       const detail=!data.configured?'管理員尚未完成後端日曆授權設定。':!data.location?'可先授權自己的日曆；管理員設定會議室地點後，符合地點的邀請會開始同步。':`${events.length} 場會議 · ${unresolved?`${unresolved} 個來源尚未完成授權或同步 · `:''}${syncMessage}。`;
       A.setLive({rooms:[room()],events,ready:!!data.location&&data.configured,availabilityComplete:false,message:syncMessage});
-      status(callbackMessage||detail);if(callbackMessage){A.notify?.(callbackMessage);callbackMessage='';}
+      const queuedMessage='已安排背景同步，完成後會更新各來源的成功時間。';
+      status(callbackMessage||(data.syncQueued?queuedMessage:detail));if(callbackMessage){A.notify?.(callbackMessage);callbackMessage='';}
+      if(manual&&data.syncQueued)A.notify?.(queuedMessage);
       if(manual&&data.sources.some(s=>['error','reauthorize'].includes(s.state)))A.notify?.('部分日曆需要重新授權或重試，請查看「已登入帳號」。');
       if(show)A.view('overview');
       if(autoAuthorizePending&&!cached){

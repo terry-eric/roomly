@@ -183,6 +183,27 @@ export async function syncCalendars(env:Env,week=taipeiWeek(),manual=false,dirty
     for(const result of batch)if(result.status==='rejected')syncFailureDiagnostic(result.reason);
   }
 }
+export async function enqueueCalendarSync(env:Env,week=taipeiWeek(),manual=false,allDue=false){
+  const queue=env.CALENDAR_SYNC_QUEUE;if(!queue||!calendarReady(env))return false;
+  const room=await settings(env);if(!room.location)return false;
+  if(allDue){
+    // Remember a requested future week even while another week's lease makes
+    // every source temporarily ineligible. Empty rows are waiting, not success.
+    await env.DB.prepare(`INSERT INTO calendar_snapshots(member_sub,week_start,room_revision,connection_version) SELECT c.member_sub,?,r.revision,c.version FROM calendar_connections c JOIN members m ON m.sub=c.member_sub JOIN room_settings r ON r.id=1 WHERE c.status='connected' AND m.status='approved' AND r.location!='' ON CONFLICT(member_sub,week_start) DO NOTHING`).bind(week).run();
+  }
+  const time=second();
+  // Regular page loads share the due check with maintenance. A fresh cache
+  // does not spend a queue write/read/delete on an empty refresh.
+  const row=manual
+    ?await env.DB.prepare("SELECT COUNT(*) AS count FROM calendar_connections c JOIN members m ON m.sub=c.member_sub WHERE c.status='connected' AND m.status='approved'").first<{count:number}>()
+    :await env.DB.prepare(`SELECT COUNT(*) AS count FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE m.status='approved' AND c.status='connected' AND (s.member_sub IS NULL OR (s.lease_until<=? AND (s.retry_at<=? OR s.room_revision!=? OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision))) AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=? AND other.lease_until>?)`).bind(week,time,time,room.revision,week,time).first<{count:number}>();
+  if(!row||!Number.isSafeInteger(row.count)||row.count<=0)return false;
+  try{
+    if(manual||(allDue&&row.count>2))await queue.sendBatch(Array.from({length:Math.min(100,Math.ceil(row.count/2))},()=>({body:manual?{week,manual:true as const}:{week}})));
+    else await queue.send({week});
+    return true;
+  }catch{console.warn(JSON.stringify({event:'calendar_queue_failed',code:'send_failed'}));throw Error('Calendar queue enqueue failed');}
+}
 export async function calendarAPI(path:string,request:Request,env:Env,member:CalendarMember,readBody:()=>Promise<Record<string,unknown>>,verify:IdentityVerifier){
   if(member.status!=='approved')throw new CalendarError(403,'通過白名單後才能使用共用日曆。');
   if(path==='calendar/authorize'&&request.method==='POST'){
@@ -212,7 +233,7 @@ export async function calendarAPI(path:string,request:Request,env:Env,member:Cal
       if(!cipher)return redirect(env,'refresh');
       // The member may have been revoked while Google was responding.
       await env.DB.batch([env.DB.prepare(`INSERT INTO calendar_connections(member_sub,refresh_cipher,version,status,updated_at,shared_calendars) SELECT ?,?,?,'connected',?,? WHERE EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') ON CONFLICT(member_sub) DO UPDATE SET refresh_cipher=excluded.refresh_cipher,version=excluded.version,status='connected',updated_at=excluded.updated_at,shared_calendars=excluded.shared_calendars,error_code=NULL`).bind(member.sub,cipher,random(),second(),canListCalendars(tokens.scope)?1:0,member.sub),...['calendar_snapshots','calendar_watch_channels','calendar_watch_targets'].map(table=>env.DB.prepare('DELETE FROM '+table+' WHERE member_sub=?').bind(member.sub))]);
-      await syncCalendars(env);return redirect(env,'connected');
+      if(env.CALENDAR_SYNC_QUEUE)await enqueueCalendarSync(env,taipeiWeek(),false,true);else await syncCalendars(env);return redirect(env,'connected');
     }catch{return redirect(env,'failed');}
   }
   if(path==='calendar/disconnect'&&request.method==='POST'){await removeConnection(env,member.sub);return reply({ok:true});}
@@ -232,10 +253,11 @@ export async function calendarAPI(path:string,request:Request,env:Env,member:Cal
     // Approval changes only need the existing cache. Avoid contacting Google
     // while promptly removing revoked sources from already-open boards.
     const cachedOnly=!manual&&new URL(request.url).searchParams.get('cached')==='1';
-    if(!cachedOnly)await syncCalendars(env,week,manual);const room=await settings(env);
+    let syncQueued=false;
+    if(!cachedOnly){if(env.CALENDAR_SYNC_QUEUE)syncQueued=await enqueueCalendarSync(env,week,manual,true);else await syncCalendars(env,week,manual);}const room=await settings(env);
     const {results}=await env.DB.prepare(`SELECT m.sub,m.email,c.status,c.version,c.shared_calendars,s.calendar_count,s.data,s.synced_at,s.error_code FROM members m LEFT JOIN calendar_connections c ON c.member_sub=m.sub LEFT JOIN calendar_snapshots s ON s.member_sub=m.sub AND s.week_start=? AND s.room_revision=? AND s.connection_version=c.version WHERE m.status='approved' ORDER BY m.email`).bind(week,room.revision).all<{sub:string;email:string;status:string|null;shared_calendars:number|null;calendar_count:number|null;data:string|null;synced_at:number|null;error_code:string|null}>();
     const sources=results.map(row=>({email:row.email,state:!row.status?'unauthorized':row.status==='reauthorize'?'reauthorize':row.error_code?'error':!row.synced_at?'waiting':second()-row.synced_at>2*syncInterval?'stale':'ready',syncedAt:row.synced_at||null,sharedCalendars:!!row.shared_calendars,calendarCount:row.shared_calendars?(row.calendar_count||1):1,events:row.status==='connected'&&row.data?JSON.parse(row.data).filter((event:EventRecord)=>row.shared_calendars||!event.calendarKey):[]}));
-    return reply({week,location:room.location,configured:calendarReady(env),email:member.email,isAdmin:member.role==='admin'&&member.email===env.ADMIN_EMAIL,sources});
+    return reply({week,location:room.location,configured:calendarReady(env),email:member.email,isAdmin:member.role==='admin'&&member.email===env.ADMIN_EMAIL,syncQueued,sources});
   }
   throw new CalendarError(404,'找不到此功能。');
 }
@@ -253,5 +275,11 @@ export async function calendarMaintenance(env:Env,fullSync=true){
   // rotates fairly even when the current week receives continuous changes.
   // A missing current-week snapshot initializes once with priority zero.
   const {results}=await env.DB.prepare(`SELECT week_start FROM (SELECT s.week_start,MIN(s.retry_at) AS attempted FROM calendar_snapshots s JOIN calendar_connections c ON c.member_sub=s.member_sub JOIN members m ON m.sub=c.member_sub JOIN room_settings r ON r.id=1 WHERE c.status='connected' AND m.status='approved' AND s.lease_until<=? AND (s.retry_at<=? OR s.room_revision!=r.revision OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision) AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=s.week_start AND other.lease_until>?) GROUP BY s.week_start UNION ALL SELECT ? AS week_start,0 AS attempted WHERE EXISTS(SELECT 1 FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE c.status='connected' AND m.status='approved' AND s.member_sub IS NULL AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=? AND other.lease_until>?))) GROUP BY week_start ORDER BY MIN(attempted),week_start LIMIT 1`).bind(time,time,time,current,current,current,time).all<{week_start:string}>();
-  if(results[0])await syncCalendars(env,results[0].week_start,false,false,2);
+  if(results[0]){
+    if(env.CALENDAR_SYNC_QUEUE){
+      // The producer does not claim a source or mark it synced. The consumer
+      // checks current approval and ownership before doing the Google work.
+      await enqueueCalendarSync(env,results[0].week_start);
+    }else await syncCalendars(env,results[0].week_start,false,false,2);
+  }
 }
