@@ -134,6 +134,8 @@ form>label,.form-row>label{font-size:15px}form input,form select,form textarea{f
 .gantt-axis,.gantt-row{grid-template-columns:var(--label-width) minmax(0,1fr)}
 .gantt-track{min-width:0}
 .shared-calendar>div{min-width:0;flex:1}
+.google-entry-status{min-width:0;flex:1}.own-sync-status{margin:4px 0 0;font-size:13px;line-height:1.6;color:#526b59;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.own-sync-status[hidden]{display:none}.own-sync-status[data-state="error"],.own-sync-status[data-state="stale"]{color:#a14935}
+.shared-calendar[data-own="true"]{background:#f1f6ec;box-shadow:inset 3px 0 #6d8a61;padding:10px 10px 10px 14px;border-radius:6px}.shared-calendar .shared-sync-state{font-size:13px}.shared-calendar[data-state="ready"] .shared-sync-state{color:#406d59;font-weight:600}.shared-calendar .shared-sync-time,.shared-calendar[data-state="error"] .shared-sync-time{color:#61705e;font-size:13px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
 .shared-calendar>span{flex:none;white-space:nowrap;font-size:12px}
 .shared-calendar .shared-authorization{display:inline-flex;align-items:center;padding:4px 8px;border-radius:6px;background:#e7f1e5;color:#42643d;font-size:12px;font-weight:600;line-height:1.5}
 .shared-calendar[data-authorization="missing"] .shared-authorization,.shared-calendar[data-authorization="expired"] .shared-authorization{background:#fbe6de;color:#a14935}

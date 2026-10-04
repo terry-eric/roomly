@@ -34,7 +34,7 @@
   <main>
     <section id="overview" class="view">
       <div class="tablet-heading"><div><h1 id="room-name">主會議室</h1><p id="week-label"></p></div><button class="primary" id="new-booking">＋ 預約</button></div>
-      <div class="google-entry"><div class="notice" role="status">日曆變更時自動同步，每 10 分鐘補查</div><div class="google-entry-actions"><button id="pwa-install" type="button" hidden>安裝 App</button><button class="primary" id="google-start">同步</button></div></div>
+      <div class="google-entry"><div class="google-entry-status"><div class="notice" role="status">日曆變更時自動同步，每 10 分鐘補查</div><p id="own-sync-status" class="own-sync-status" hidden></p></div><div class="google-entry-actions"><button id="pwa-install" type="button" hidden>安裝 App</button><button class="primary" id="google-start">同步</button></div></div>
       <form id="location-filter" class="location-filter" novalidate hidden><label for="room-location">共用會議室地點</label><div class="location-controls"><input id="room-location" class="google-input" type="text" required maxlength="100" placeholder="輸入邀請的地點文字" autocomplete="off" aria-describedby="location-status" disabled><button id="location-apply" class="primary" type="submit" disabled>新增地點</button></div><p id="location-status" class="small muted" role="status">正在載入地點設定…</p></form>
       <details id="shared-calendars" class="shared-calendars" hidden><summary id="shared-summary">已登入帳號</summary><p id="shared-calendar-status" class="small muted" role="status">每位通過白名單的已登入帳號，都會成為共用看板的來源。</p><button id="refresh-sources" class="quiet outlined" type="button">更新來源狀態</button><div id="shared-calendar-list"></div></details>
       <div class="tablet-toolbar">

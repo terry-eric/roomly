@@ -20,6 +20,19 @@
   const status=text=>$('#google-status').textContent=text;
   const room=()=>({id:'forest',name:feed?.location||'主會議室',meta:'共用 Google 日曆邀請'});
   const labels={unauthorized:'尚未授權自己的日曆',reauthorize:'Google 授權已失效，請本人重新授權',waiting:'等待首次同步',error:'同步失敗，暫時無法確認最新預約',stale:'資料逾時，等待重新同步'};
+  function successTime(source){
+    if(!source||['unauthorized','reauthorize'].includes(source.state)||!Number.isFinite(source.syncedAt)||source.syncedAt<=0)return '';
+    const at=new Date(source.syncedAt*1000);if(!Number.isFinite(at.getTime()))return '';
+    const parts=Object.fromEntries(new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'}).formatToParts(at).map(part=>[part.type,part.value]));
+    return `${parts.year}/${parts.month}/${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+  }
+  function renderOwnStatus(source,warning=''){
+    const element=$('#own-sync-status');element.hidden=!source;
+    if(!source){element.textContent='';return;}
+    const time=successTime(source),result=warning||(source.state==='ready'&&time?'同步成功':labels[source.state]||'等待同步');
+    element.dataset.state=warning?'error':source.state;
+    element.textContent=`我的來源：${result}${time?` · 最後成功 ${time}`:''}`;
+  }
   function renderLocation(){
     const input=$('#room-location'),button=$('#location-apply'),message=$('#location-status'),admin=!!feed?.isAdmin;
     if(feed&&(!locationDirty&&!locationSaving||!admin)){input.value=feed.location;if(!admin)locationDirty=false;}
@@ -43,17 +56,19 @@
     $('#shared-summary').textContent=`已登入帳號 · ${sources.length} 位${counts.missing?` · ${counts.missing} 位未授權`:''}${counts.expired?` · ${counts.expired} 位授權失效`:''}${counts.primary?` · ${counts.primary} 位需完整授權`:''}`;
     $('#shared-calendar-list').innerHTML=[...sources].sort((a,b)=>authorization(a).order-authorization(b).order).map(s=>{
       const grant=authorization(s);
-      const time=s.syncedAt?new Intl.DateTimeFormat('zh-TW',{timeZone:'Asia/Taipei',hour:'2-digit',minute:'2-digit'}).format(new Date(s.syncedAt*1000)):'';
+      const time=successTime(s);
       const days=A.days?A.days():RoomCore.boardDays(A.day());
       const count=RoomCore.mergeGoogle([{calendar:{id:s.email,name:s.email,kind:'person'},events:s.events}],{room:room()}).filter(e=>e.roomIds.length&&RoomCore.overlapsDays(Date.parse(e.startISO),Date.parse(e.endISO),days)).length;
       const calendars=Number.isInteger(s.calendarCount)&&s.calendarCount>=0?` · ${s.calendarCount} 個日曆`:'';
       const primaryOnly=s.sharedCalendars===false&&!['unauthorized','reauthorize'].includes(s.state)?' · 目前僅主要日曆':'';
-      const text=(s.state==='ready'?`這五天 ${count} 場 · ${time} 已同步${calendars}`:labels[s.state]||'等待同步')+primaryOnly;
-      return `<div class="shared-calendar" data-state="${s.state==='ready'?'ready':'error'}" data-authorization="${grant.key}"><div><strong>${A.esc(s.email)}${s.email===feed.email?'（我）':''}</strong><small>${A.esc(text)}${s.state!=='ready'&&time?` · 上次成功 ${time}`:''}</small></div><span class="shared-authorization">${grant.label}</span></div>`;
+      const text=(s.state==='ready'&&time?`同步成功 · 這五天 ${count} 場${calendars}`:labels[s.state]||'等待首次同步')+primaryOnly;
+      const success=time?`最後成功同步：${time}`:'尚無成功同步紀錄';
+      return `<div class="shared-calendar" data-state="${s.state==='ready'?'ready':'error'}" data-authorization="${grant.key}" data-own="${s.email===feed.email}"><div><strong>${A.esc(s.email)}${s.email===feed.email?'（我）':''}</strong><small class="shared-sync-state">${A.esc(text)}</small><small class="shared-sync-time">${A.esc(success)}</small></div><span class="shared-authorization">${grant.label}</span></div>`;
     }).join('');
-    $('#shared-calendar-status').textContent='未授權或授權失效的帳號排在前面，需本人完成 Google 同意。「需完整授權」代表仍沿用舊版部分授權，須本人完整同意日曆活動唯讀及日曆清單唯讀兩項權限，才能加入共用日曆。只列已登入且通過白名單的帳號；只顯示符合會議室地點的活動，空白時段不保證會議室可用。';
+    $('#shared-calendar-status').textContent='時間為台北時間；跨週時顯示所選範圍中最早的成功同步時間，所有週次都成功才會顯示同步成功。未授權或授權失效的帳號排在前面，需本人完成 Google 同意。「需完整授權」須本人完整同意日曆活動唯讀及日曆清單唯讀兩項權限。只列已登入且通過白名單的帳號；只顯示符合會議室地點的活動，空白時段不保證會議室可用。';
     renderLocation();
     const own=sources.find(s=>s.email===feed.email),connected=own&&!['unauthorized','reauthorize'].includes(own.state);
+    renderOwnStatus(own);
     const incomplete=!!own&&(!connected||own.sharedCalendars===false),retry=!!calendarOutcome&&calendarOutcome!=='connected'&&(!own||incomplete);
     $('#google-connect').textContent='重新授權日曆';
     $('#google-connect').hidden=authorizing||!(incomplete||retry);
@@ -104,7 +119,7 @@
         sourcesForRange.push({...source,state,sharedCalendars,calendarCount,syncedAt:Math.min(...parts.map(s=>s.syncedAt||0))||null,events:[...events.values()]});
       }
       const data={...feeds[0],sources:sourcesForRange};
-      feed=data;renderSources();
+      feed=data;statusRefreshPending=false;renderSources();
       const sources=data.sources.map(s=>({calendar:{id:s.email,name:s.email,kind:'person'},events:s.events}));
       const events=RoomCore.mergeGoogle(sources,{room:room()}).filter(e=>e.roomIds.length&&RoomCore.overlapsDays(Date.parse(e.startISO),Date.parse(e.endISO),days));
       const unresolved=data.sources.filter(s=>s.state!=='ready').length;
@@ -123,8 +138,9 @@
       if(run!==generation)return;
       const message=error.message||'共用看板載入失敗。';status(message);
       if(!manual&&error.status===400)A.notify?.(message);
-      if((manual||cached&&feed)&&error.status!==401&&error.status!==403){$('#shared-calendar-status').textContent=message;if(manual)A.notify?.(message);return false;}
+      if((manual||cached&&feed)&&error.status!==401&&error.status!==403){$('#shared-calendar-status').textContent=message;renderOwnStatus(feed?.sources.find(s=>s.email===feed.email),manual?'本次同步失敗':'狀態讀取失敗');if(manual)A.notify?.(message);return false;}
       feed=null;$('#shared-calendar-list').innerHTML='';$('#shared-summary').textContent='已登入帳號';$('#shared-calendar-status').textContent=message;$('#google-connect').disabled=true;$('#google-shared-hint').hidden=true;$('#google-disconnect').disabled=true;
+      renderOwnStatus();
       A.setLive({rooms:[room()],message:syncMessage,availabilityComplete:false});
       renderLocation();return false;
     }
@@ -137,11 +153,11 @@
     catch(error){const message=error.message||'Google 日曆授權未完成，請稍後重試。';if(bootstrap===true)callbackMessage=message;status(message);if(bootstrap!==true)A.notify?.(message);authorizing=false;$('#google-connect').disabled=!feed?.configured;$('#google-connect').hidden=false;flushCachedRefresh();}
   }
   $('#google-connect').onclick=()=>authorize();
-  const needsStatusRefresh=()=>!!feed?.sources.some(source=>['stale','waiting'].includes(source.state));
+  const needsStatusRefresh=()=>!!feed?.configured&&!!feed?.sources.some(source=>['ready','stale','waiting','error'].includes(source.state));
   function flushCachedRefresh(){
     if((cachedRefreshPending||statusRefreshPending)&&!busy&&!locationSaving&&!authorizing&&live&&!document.hidden){
-      // A normal reload may already have resolved a queued status check. Change
-      // notifications still require their cache read even when all sources are ready.
+      // A successful feed read consumes queued timestamp checks. Notifications
+      // still require their own cache read to cover later changes.
       const needed=cachedRefreshPending||needsStatusRefresh();
       cachedRefreshPending=statusRefreshPending=false;
       if(needed)void sync(false,false,true);
@@ -152,6 +168,7 @@
     if(!live)return;
     generation++;cachedRefreshPending=true;
     const rooms=[room()];feed=null;
+    renderOwnStatus();
     $('#shared-calendar-list').innerHTML='';$('#shared-summary').textContent='已登入帳號';$('#shared-calendar-status').textContent='正在更新使用資格…';$('#google-connect').hidden=true;$('#google-disconnect').disabled=true;
     A.setLive({rooms,events:[],ready:false,availabilityComplete:false,message:syncMessage});
     flushCachedRefresh();
@@ -159,7 +176,7 @@
   $('#google-start').onclick=()=>sync(true,true);
   $('#google-sync').onclick=()=>sync(true,true);$('#refresh-sources').onclick=()=>sync(false,true);
   $('#google-disconnect').onclick=async()=>{try{await access.request('calendar/disconnect',{});await sync();status('已停止分享；後端授權與我的會議快取已移除。可於 Google 第三方連線設定撤銷授權。');}catch(error){status(error.message);}};
-  $('#google-demo').onclick=()=>{generation++;activeRun=0;busy=false;live=false;cachedRefreshPending=statusRefreshPending=false;$('#google-sync').disabled=$('#google-start').disabled=$('#refresh-sources').disabled=false;$('#google-start').textContent='同步';A.showDemo();A.view('overview');status('目前查看這台裝置的本機資料；共用日曆仍由後端同步。');};
+  $('#google-demo').onclick=()=>{generation++;activeRun=0;busy=false;live=false;cachedRefreshPending=statusRefreshPending=false;renderOwnStatus();$('#google-sync').disabled=$('#google-start').disabled=$('#refresh-sources').disabled=false;$('#google-start').textContent='同步';A.showDemo();A.view('overview');status('目前查看這台裝置的本機資料；共用日曆仍由後端同步。');};
   $('#room-location').oninput=()=>{locationDirty=$('#room-location').value!==feed?.location;locationFeedback=null;renderLocation();};
   $('#location-filter').onsubmit=async e=>{
     e.preventDefault();if(locationSaving)return;
@@ -191,7 +208,7 @@
   }).catch(()=>status('請先登入正式網站。'));
   setInterval(()=>{if(!document.hidden&&live&&!busy&&!locationSaving&&!authorizing)void sync();},10*60*1000);
   // Successful unchanged syncs advance syncedAt without changing calendarRevision.
-  // Read only the committed cache until queued or stale sources become ready.
+  // Read committed timestamps for connected sources even when meetings are unchanged.
   setInterval(()=>{if(!document.hidden&&live&&!authorizing&&needsStatusRefresh()){statusRefreshPending=true;flushCachedRefresh();}},60*1000);
   document.addEventListener('visibilitychange',()=>{if(!document.hidden&&live&&!busy&&!locationSaving&&!authorizing){if(cachedRefreshPending||statusRefreshPending)flushCachedRefresh();else void sync();}});
 })();
