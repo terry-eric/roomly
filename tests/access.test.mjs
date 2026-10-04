@@ -12,6 +12,7 @@ function fixture(verifier=async credential=>JSON.parse(credential)){
   sqlite.exec(readFileSync(new URL('../migrations/0004_shared_calendar_list.sql',import.meta.url),'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0005_calendar_watch.sql',import.meta.url),'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0006_calendar_revision.sql',import.meta.url),'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0007_calendar_enqueue_gates.sql',import.meta.url),'utf8'));
   const DB={prepare(sql){let values=[];const statement=sqlite.prepare(sql);return {bind(...v){values=v;return this;},async first(){return statement.get(...values)||null;},async all(){return {results:statement.all(...values)};},async run(){const r=statement.run(...values);return {meta:{changes:r.changes}};}};},async batch(statements){return Promise.all(statements.map(s=>s.run()));}};
   const mail=[],pending=[];
   const env={DB,EMAIL:{async send(message){mail.push(message);}},ASSETS:{async fetch(r){return new Response(new URL(r.url).pathname,{headers:{'Content-Type':'text/html'}});}},APP_ORIGIN:origin,GOOGLE_CLIENT_ID:'client',ADMIN_EMAIL:admin,MAIL_FROM:'roomly@example.com'};

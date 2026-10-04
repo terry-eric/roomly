@@ -11,7 +11,7 @@ const eventScope='https://www.googleapis.com/auth/calendar.events.readonly',list
 const meeting={id:'e1',iCalUID:'shared-invitation',summary:'共同會議',location:'台北 主會議室',start:{dateTime:week+'T10:00:00+08:00'},end:{dateTime:week+'T11:00:00+08:00'},attendees:[{email:'teammate@gmail.com',displayName:'成員',responseStatus:'accepted'}],description:'NEVER_STORE_PRIVATE_NOTES',attachments:[{fileUrl:'private-url'}],hangoutLink:'https://meet.google.com/abc-defg-hij'};
 const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
 function fixture(){
-  const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+  const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision','0007_calendar_enqueue_gates'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
   const DB={prepare(sql){const s=sqlite.prepare(sql);let values=[];return {bind(...v){values=v;return this;},async first(){return s.get(...values)||null;},async all(){return {results:s.all(...values)};},run(){return {meta:{changes:s.run(...values).changes}};}};},async batch(statements){sqlite.exec('BEGIN');try{const values=statements.map(statement=>statement.run());sqlite.exec('COMMIT');return values;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
   const env={DB,EMAIL:{async send(){}},ASSETS:{async fetch(){return new Response('asset');}},APP_ORIGIN:origin,GOOGLE_CLIENT_ID:'client',GOOGLE_CLIENT_SECRET:'test-client-secret',CALENDAR_TOKEN_KEY:'11'.repeat(32),ADMIN_EMAIL:admin,MAIL_FROM:'roomly@example.com'};
   const pending=[],verifications=[];const handler=createHandler(async(credential,clientId,nonce)=>{verifications.push({clientId,nonce});return JSON.parse(credential);});
@@ -150,6 +150,64 @@ test('shared company calendars bring in weekly meetings, pagination and distinct
     assert.ok(Core.overlapsDays(Date.parse(merged[0].startISO),Date.parse(merged[0].endISO),Core.boardDays('2026-10-04')));
     const stored=f.sqlite.prepare('SELECT data FROM calendar_snapshots WHERE week_start=?').get('2026-10-05').data;for(const forbidden of [companyCalendar,'hidden-calendar','PRIVATE_NOTES','私人地點'])assert.ok(!stored.includes(forbidden));
     cancelled=true;f.sqlite.exec('UPDATE calendar_snapshots SET retry_at=0');const refreshed=await (await f.get('calendar/feed?day=2026-10-08',owner)).json();assert.deepEqual(refreshed.sources.find(s=>s.email===admin).events,[]);
+  });
+});
+
+test('projected Google responses preserve pagination, room permissions, recurring versions and participant/Meet details',async()=>{
+  const {f,owner}=await team();await f.connect('admin');f.sqlite.exec('UPDATE calendar_connections SET shared_calendars=1');
+  // Model partial responses from the requested selector, rather than returning
+  // full fixtures that could hide an accidentally omitted required field.
+  function project(value,fields){
+    assert.ok(typeof fields==='string'&&fields.length,'list requests must select fields');
+    if(Array.isArray(value))return value.map(item=>project(item,fields));
+    const selected={};let depth=0,start=0;
+    for(let i=0;i<=fields.length;i++){
+      if(fields[i]==='(')depth++;else if(fields[i]===')')depth--;
+      assert.ok(depth>=0,'balanced fields selector');
+      if(i<fields.length&&(fields[i]!==','||depth!==0))continue;
+      const match=/^([A-Za-z]\w*)(?:\((.*)\))?$/.exec(fields.slice(start,i));assert.ok(match,'valid field selector');start=i+1;
+      const [,name,nested]=match;if(Object.hasOwn(value,name))selected[name]=nested===undefined?value[name]:project(value[name],nested);
+    }
+    assert.equal(depth,0);return selected;
+  }
+  const addDays=n=>new Date(Date.parse(week+'T00:00:00Z')+n*86400000).toISOString().slice(0,10);
+  const occurrence={...meeting,id:'old-series',iCalUID:'projected-series',summary:'Old reservation',sequence:1,updated:week+'T08:00:00Z',recurringEventId:'projected_series',originalStartTime:{dateTime:week+'T10:00:00+08:00',timeZone:'Asia/Taipei'}};
+  const moved={...occurrence,id:'new-series',summary:'Moved reservation',sequence:2,updated:week+'T09:00:00Z',start:{dateTime:addDays(2)+'T14:07:00+08:00'},end:{dateTime:addDays(2)+'T15:12:00+08:00'}};
+  const another={...occurrence,id:'next-occurrence',originalStartTime:{dateTime:addDays(3)+'T10:00:00+08:00'},start:{dateTime:addDays(3)+'T10:00:00+08:00'},end:{dateTime:addDays(3)+'T11:00:00+08:00'}};
+  const allDay={...meeting,id:'all-day',iCalUID:'projected-all-day',start:{date:addDays(4)},end:{date:addDays(5)},recurringEventId:'all_day_series',originalStartTime:{date:addDays(4)}};
+  const resource={...meeting,id:'resource',iCalUID:'projected-resource',summary:'Resource reservation',location:'Elsewhere',hangoutLink:undefined,organizer:{email:'organizer@example.com',displayName:'Example organizer'},attendees:[{email:'room@example.com',displayName:'主會議室',resource:true,responseStatus:'accepted'},{email:'participant@example.com',displayName:'Example participant',responseStatus:'tentative',self:true}],attendeesOmitted:true,transparency:'transparent',conferenceData:{entryPoints:[{entryPointType:'phone',uri:'tel:+10000000000'},{entryPointType:'video',uri:'https://meet.google.com/xyz-abcd-efg'}]}};
+  const directMeet={...meeting,id:'direct-meet',iCalUID:'projected-direct-meet'};
+  const excluded=[
+    {...meeting,id:'declined-room',attendees:[{resource:true,displayName:'主會議室',responseStatus:'declined'}]},
+    {...meeting,id:'declined-self',attendees:[{self:true,responseStatus:'declined'}]},
+    {...meeting,id:'cancelled',status:'cancelled'},
+    {...meeting,id:'different-room',location:'Other room'}
+  ];
+  let restricted=false;
+  await mocked((url,options)=>{
+    if(url.hostname==='oauth2.googleapis.com'){assert.equal(url.searchParams.has('fields'),false);return json({access_token:'fixture-access',scope:fullScopes});}
+    let response;
+    if(url.pathname.endsWith('/calendarList')){
+      const token=url.searchParams.get('pageToken');assert.ok(token===null||token==='list-next');
+      response=token?{items:[{id:companyCalendar,accessRole:'reader'},{id:'hidden',hidden:true,accessRole:'owner'},{id:'deleted',deleted:true,accessRole:'owner'},{id:'free-busy',accessRole:'freeBusyReader'}]}:{items:[{id:'primary-identifier',primary:true,accessRole:'owner',summary:'discard-this-list-name'}],nextPageToken:'list-next'};
+    }else{
+      const id=calendarId(url),token=url.searchParams.get('pageToken');assert.ok(id==='primary'||id===companyCalendar,'restricted list entries must not be read');assert.ok(token===null||token==='event-next');
+      response=id==='primary'?(token?{accessRole:'owner',items:[directMeet]}:{accessRole:'owner',items:[occurrence],nextPageToken:'event-next'}):(token?{accessRole:restricted?'freeBusyReader':'reader',items:[resource]}:{accessRole:'reader',items:[moved,another,allDay,...excluded],nextPageToken:'event-next'});
+    }
+    const projected=project(response,url.searchParams.get('fields'));assert.ok(!JSON.stringify(projected).includes('discard-this-list-name'));assert.ok(!JSON.stringify(projected).includes('NEVER_STORE_PRIVATE_NOTES'));return json(projected);
+  },async calls=>{
+    const feed=await (await f.get('calendar/feed?day='+week,owner)).json(),source=feed.sources.find(s=>s.email===admin),events=source.events;
+    assert.equal(source.state,'ready');assert.equal(source.calendarCount,2);assert.equal(events.length,6);
+    assert.deepEqual(events.map(event=>event.id).sort(),['all-day','direct-meet','new-series','next-occurrence','old-series','resource']);
+    const savedMoved=events.find(event=>event.id==='new-series');assert.equal(savedMoved.sequence,2);assert.equal(savedMoved.updated,week+'T09:00:00.000Z');assert.deepEqual(savedMoved.originalStartTime,{dateTime:week+'T02:00:00.000Z'});
+    assert.deepEqual(events.find(event=>event.id==='all-day').originalStartTime,{date:addDays(4)});
+    const savedResource=events.find(event=>event.id==='resource');assert.deepEqual(savedResource.organizer,{email:'organizer@example.com',displayName:'Example organizer'});assert.deepEqual(savedResource.attendees,[{email:'room@example.com',displayName:'主會議室',resource:true,responseStatus:'accepted',self:false},{email:'participant@example.com',displayName:'Example participant',resource:false,responseStatus:'tentative',self:true}]);assert.equal(savedResource.attendeesOmitted,true);assert.equal(savedResource.hangoutLink,'https://meet.google.com/xyz-abcd-efg');assert.equal(savedResource.transparency,'transparent');
+    assert.equal(events.find(event=>event.id==='direct-meet').hangoutLink,meeting.hangoutLink);
+    const merged=Core.mergeGoogle([{calendar:{id:'fixture-member',name:'Example member',kind:'person'},events}],{room:{id:'fixture-room',name:'主會議室'}});assert.equal(merged.length,5);assert.ok(!merged.some(event=>event.title==='Old reservation'&&event.startISO===new Date(week+'T10:00:00+08:00').toISOString()));assert.equal(merged.find(event=>event.title==='Moved reservation').startISO,new Date(moved.start.dateTime).toISOString());assert.deepEqual(merged.find(event=>event.title==='Resource reservation').busyRoomIds,[]);
+    assert.equal(calls.filter(call=>new URL(call.url).pathname.endsWith('/calendarList')).length,2);assert.equal(calls.filter(call=>new URL(call.url).pathname.endsWith('/events')).length,4);
+    assert.ok(calls.filter(call=>new URL(call.url).pathname.endsWith('/watch')).every(call=>!new URL(call.url).searchParams.has('fields')));
+    const stored=f.sqlite.prepare('SELECT data FROM calendar_snapshots WHERE member_sub=? AND week_start=?').get('admin',week).data;for(const privateField of ['description','attachments','NEVER_STORE_PRIVATE_NOTES',companyCalendar])assert.ok(!stored.includes(privateField));
+    restricted=true;f.sqlite.exec('UPDATE calendar_snapshots SET retry_at=0');const next=await (await f.get('calendar/feed?day='+week,owner)).json(),restrictedSource=next.sources.find(s=>s.email===admin);assert.equal(restrictedSource.state,'error');assert.deepEqual(restrictedSource.events.map(event=>event.id).sort(),['direct-meet','old-series']);assert.equal(f.sqlite.prepare('SELECT status FROM calendar_connections WHERE member_sub=?').get('admin').status,'connected');
   });
 });
 

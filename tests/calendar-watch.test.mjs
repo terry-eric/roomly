@@ -11,7 +11,7 @@ const now=()=>Math.floor(Date.now()/1000),json=(data,status=200)=>new Response(J
 const meeting=day=>({id:'event-'+day,iCalUID:'invite-'+day,summary:'Original reservation',location:'Meeting room',start:{dateTime:day+'T10:00:00+08:00'},end:{dateTime:day+'T11:00:00+08:00'}});
 
 async function fixture(){
- const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+ const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision','0007_calendar_enqueue_gates'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
  const DB={prepare(sql){const statement=sqlite.prepare(sql);let values=[];return {bind(...args){values=args;return this;},async first(){return statement.get(...values)||null;},async all(){return {results:statement.all(...values)};},run(){return {meta:{changes:statement.run(...values).changes}};}};},async batch(statements){sqlite.exec('BEGIN');try{const results=statements.map(statement=>statement.run());sqlite.exec('COMMIT');return results;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
  const env={DB,EMAIL:{async send(){}},ASSETS:{async fetch(){return new Response('asset');}},APP_ORIGIN:origin,GOOGLE_CLIENT_ID:'fixture-client',GOOGLE_CLIENT_SECRET:'fixture-client-secret',CALENDAR_TOKEN_KEY:'11'.repeat(32),ADMIN_EMAIL:'admin@example.com',MAIL_FROM:'roomly@example.com'};
  sqlite.exec("INSERT INTO members(sub,email,name,role,status,requested_at) VALUES('member','member@example.com','Member','member','approved',1); UPDATE room_settings SET location='Meeting room',revision=2 WHERE id=1;");
@@ -354,9 +354,9 @@ test('configured maintenance only enqueues the selected week without reading Goo
 });
 
 test('queued work really commits current data for at most two approved sources and acknowledges after completion',async()=>{
- const f=await fixture(),sent=[];await addSource(f,'member-2');await addSource(f,'member-3');f.env.CALENDAR_SYNC_QUEUE={async send(body){sent.push(body);}};
+ const f=await fixture(),sent=[],batches=[];await addSource(f,'member-2');await addSource(f,'member-3');f.env.CALENDAR_SYNC_QUEUE={async send(body){sent.push(body);},async sendBatch(messages){batches.push(messages);sent.push(...messages.map(message=>message.body));}};
  await mocked(google({title:'Queued fresh reservation'}),async calls=>{
-  await calendarMaintenance(f.env,false);assert.equal(calls.length,0);assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_snapshots').get().n,0);
+  await calendarMaintenance(f.env,false);assert.equal(calls.length,0);assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_snapshots').get().n,0);assert.deepEqual(batches,[[{body:{week}},{body:{week}}]],'three eligible sources are split into two small CPU-isolated jobs');
   const message=queueMessage(sent[0]);await consume(f,[message]);assert.deepEqual(message.result,{acks:1,retries:[]});
   const completed=f.sqlite.prepare('SELECT * FROM calendar_snapshots').all();assert.equal(completed.length,2);assert.ok(completed.every(row=>row.synced_at>0&&row.lease_until===0&&row.error_code===null&&JSON.parse(row.data)[0].summary==='Queued fresh reservation'));
   assert.equal(calls.filter(call=>new URL(call.url).hostname==='oauth2.googleapis.com').length,2);assert.equal(eventReads(calls).length,2);
@@ -434,17 +434,20 @@ test('manual HTTP sync batches enough two-source jobs for six members without fa
   const response=await f.post('calendar/sync',{day:week},cookie),data=await response.json();assert.equal(response.status,200);assert.equal(data.syncQueued,true);assert.equal(calls.length,count);assert.deepEqual(batches,[Array.from({length:3},()=>({body:{week,manual:true}}))]);assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_snapshots ORDER BY member_sub').all(),before);assert.ok(data.sources.every(source=>source.syncedAt===before[0].synced_at));
   for(const entry of batches[0]){const message=queueMessage(entry.body);await consume(f,[message]);assert.deepEqual(message.result,{acks:1,retries:[]});}
   const completed=f.sqlite.prepare('SELECT * FROM calendar_snapshots ORDER BY member_sub').all();assert.equal(completed.length,6);assert.ok(completed.every(row=>row.synced_at>before[0].synced_at&&row.error_code===null&&row.lease_until===0));assert.equal(calls.slice(count).filter(call=>new URL(call.url).hostname==='oauth2.googleapis.com').length,6,'manual requests visit all six sources, rather than only the first two');
-  const repeated=await (await f.post('calendar/sync',{day:week},cookie)).json(),finishedCalls=calls.length;assert.equal(repeated.syncQueued,true);for(const entry of batches[1])await consume(f,[queueMessage(entry.body)]);assert.equal(calls.length,finishedCalls);assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_snapshots ORDER BY member_sub').all(),completed,'duplicate taps inside thirty seconds never rewrite a fresh snapshot');
+  const repeated=await (await f.post('calendar/sync',{day:week},cookie)).json(),finishedCalls=calls.length;assert.equal(repeated.syncQueued,false);assert.equal(batches.length,1,'the server also coalesces duplicate taps before any queue write');assert.equal(calls.length,finishedCalls);assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_snapshots ORDER BY member_sub').all(),completed,'duplicate taps inside thirty seconds never rewrite a fresh snapshot');
  });
 });
 
 test('manual enqueue counts only approved connected members and sends at most one hundred small jobs',async()=>{
+ const realNow=Date.now;let clock=realNow();Date.now=()=>clock;
+ try{
  const f=await fixture(),batches=[];await addSource(f,'eligible-member');await addSource(f,'rejected-member');await addSource(f,'reauthorize-member');f.sqlite.exec("UPDATE members SET status='rejected' WHERE sub='rejected-member'; UPDATE calendar_connections SET status='reauthorize' WHERE member_sub='reauthorize-member';");
  f.env.CALENDAR_SYNC_QUEUE={async sendBatch(messages){batches.push(messages);}};assert.equal(await enqueueCalendarSync(f.env,week,true),true);assert.deepEqual(batches,[ [{body:{week,manual:true}}] ],'only two approved connected members require one job');batches.length=0;
  for(let i=0;i<203;i++){
   const member='count-member-'+i;f.sqlite.prepare("INSERT INTO members(sub,email,name,role,status,requested_at) VALUES(?,?,'Fixture','member',?,1)").run(member,member+'@example.test',i===201?'rejected':'approved');f.sqlite.prepare("INSERT INTO calendar_connections(member_sub,refresh_cipher,version,status,updated_at,shared_calendars) VALUES(?,'unread-fixture-cipher','version-1',?,1,1)").run(member,i===202?'reauthorize':'connected');
  }
- await mocked(()=>{throw Error('enqueue does not read credentials or Google');},async calls=>{assert.equal(await enqueueCalendarSync(f.env,week,true),true);assert.equal(calls.length,0);assert.equal(batches.length,1);assert.equal(batches[0].length,100);assert.ok(batches[0].every(message=>JSON.stringify(message)==JSON.stringify({body:{week,manual:true}})));assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_snapshots').get().n,0);});
+ clock+=31000;await mocked(()=>{throw Error('enqueue does not read credentials or Google');},async calls=>{assert.equal(await enqueueCalendarSync(f.env,week,true),true);assert.equal(calls.length,0);assert.equal(batches.length,1);assert.equal(batches[0].length,100);assert.ok(batches[0].every(message=>JSON.stringify(message)==JSON.stringify({body:{week,manual:true}})));assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_snapshots').get().n,0);});
+ }finally{Date.now=realNow;}
 });
 
 test('OAuth grant completion queues a regular refresh and returns before reading any calendar activities',async()=>{
@@ -478,6 +481,109 @@ test('a manual queue job blocked by another-week lease retries rather than ackno
   await mocked(google({title:'Complete manual future reservation'}),async calls=>{
    const message=queueMessage({week:nextWeek,manual:true});await consume(f,[message]);assert.deepEqual(message.result,{acks:0,retries:[{delaySeconds:180}]});assert.equal(calls.length,0);assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_snapshots ORDER BY member_sub,week_start').all(),before,'even the unblocked account waits so the manual request remains intact');
    clock+=181000;const retried=queueMessage(message.body);await consume(f,[retried]);assert.deepEqual(retried.result,{acks:1,retries:[]});const completed=f.sqlite.prepare('SELECT * FROM calendar_snapshots WHERE week_start=?').all(nextWeek);assert.equal(completed.length,2);assert.ok(completed.every(row=>row.synced_at>old&&row.error_code===null&&JSON.parse(row.data)[0].summary==='Complete manual future reservation'));assert.equal(calls.filter(call=>new URL(call.url).hostname==='oauth2.googleapis.com').length,2);
+  });
+ }finally{Date.now=realNow;}
+});
+
+test('ten concurrent requests for the same week share one server admission across manual and regular feeds',async()=>{
+ for(const manual of [true,false]){
+  const f=await fixture(),cookie=await f.login(),sends=[],batches=[];
+  if(manual)for(let i=0;i<5;i++)await addSource(f,'concurrent-member-'+i);
+  f.env.CALENDAR_SYNC_QUEUE={async send(body){sends.push(body);},async sendBatch(messages){batches.push(messages);}};
+  await mocked(()=>{throw Error('admission must not perform provider work');},async calls=>{
+   const responses=await Promise.all(Array.from({length:10},()=>manual?f.post('calendar/sync',{day:nextWeek},cookie):f.get('calendar/feed?day='+nextWeek,cookie)));
+   const data=await Promise.all(responses.map(response=>{assert.equal(response.status,200);return response.json();}));
+   assert.equal(data.filter(item=>item.syncQueued).length,1,'only the atomic admission winner reports a new queue send');
+   assert.equal(calls.length,0);assert.equal(sends.length+batches.length,1);
+   if(manual)assert.deepEqual(batches,[Array.from({length:3},()=>({body:{week:nextWeek,manual:true}}))]);else assert.deepEqual(sends,[{week:nextWeek}]);
+   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_snapshots WHERE synced_at>0 OR lease_until>0').get().n,0,'coalescing only saves empty waiting rows');
+   assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_enqueue_gates').get().n,1);
+  });
+ }
+});
+
+test('manual admission upgrades a regular job once, with exact thirty-second and three-minute recovery boundaries',async()=>{
+ const realNow=Date.now;let clock=Date.parse(week+'T12:00:00+08:00');Date.now=()=>clock;
+ try{
+  const f=await fixture(),sent=[],batches=[];f.env.CALENDAR_SYNC_QUEUE={async send(body){sent.push(body);},async sendBatch(messages){batches.push(messages);}};
+  await mocked(()=>{throw Error('enqueue boundaries do not read Google');},async calls=>{
+   const start=now();assert.equal(await enqueueCalendarSync(f.env,week,false,true),true);assert.equal(await enqueueCalendarSync(f.env,week,true,true),true,'a requested all-source refresh can upgrade one regular job');
+   assert.equal(await enqueueCalendarSync(f.env,week,true,true),false);assert.equal(await enqueueCalendarSync(f.env,week,false,true),false);
+   clock+=29000;assert.equal(await enqueueCalendarSync(f.env,week,true,true),false);clock+=1000;assert.equal(await enqueueCalendarSync(f.env,week,true,true),true);
+   let gate=f.sqlite.prepare('SELECT * FROM calendar_enqueue_gates').get();assert.equal(gate.regular_until,start+210);assert.equal(gate.manual_until,start+60);
+   clock=Date.parse(week+'T12:00:00+08:00')+209000;assert.equal(await enqueueCalendarSync(f.env,week,false,true),false);clock+=1000;assert.equal(await enqueueCalendarSync(f.env,week,false,true),true);
+   gate=f.sqlite.prepare('SELECT * FROM calendar_enqueue_gates').get();assert.equal(gate.regular_until,start+390);assert.equal(gate.manual_until,start+60,'regular work cannot erase the independent manual cooldown');
+   assert.equal(sent.length,2);assert.equal(batches.length,2);assert.equal(calls.length,0);assert.equal(f.sqlite.prepare('SELECT synced_at FROM calendar_snapshots').get().synced_at,0);
+  });
+ }finally{Date.now=realNow;}
+});
+
+test('an accepted send with a lost response stays reserved and is rebuilt from waiting data after expiry',async()=>{
+ const realNow=Date.now;let clock=Date.parse(week+'T12:00:00+08:00'),uncertain=true;Date.now=()=>clock;
+ const warnings=[],previousWarn=console.warn;console.warn=(...args)=>warnings.push(args);
+ try{
+  const f=await fixture(),cookie=await f.login(),sent=[];
+  f.sqlite.exec('UPDATE calendar_connections SET change_revision=4');f.sqlite.prepare('INSERT INTO calendar_snapshots(member_sub,week_start,room_revision,connection_version,data,synced_at,retry_at,change_revision,attempt_revision) VALUES(?,?,?,?,?,?,?,?,?)').run(sub,week,2,version,'[]',now(),now()+600,4,4);
+  f.env.CALENDAR_SYNC_QUEUE={async send(body){sent.push(body);if(uncertain)throw Error('private queue response was lost after acceptance');}};
+  await mocked(google({title:'Recovered accepted job'}),async calls=>{
+   const response=await f.get('calendar/feed?day='+nextWeek,cookie);assert.equal(response.status,503);const gate=f.sqlite.prepare('SELECT * FROM calendar_enqueue_gates WHERE week_start=?').get(nextWeek),waiting=f.sqlite.prepare('SELECT * FROM calendar_snapshots WHERE week_start=?').get(nextWeek);
+   assert.equal(gate.regular_until,now()+180);assert.equal(waiting.synced_at,0);assert.equal(waiting.change_revision,0);assert.equal(waiting.attempt_revision,0);assert.equal(waiting.lease_until,0);assert.equal(f.connection().change_revision,4,'enqueue failure cannot acknowledge the outstanding source generation');
+   uncertain=false;for(let i=0;i<10;i++)assert.equal((await (await f.get('calendar/feed?day='+nextWeek,cookie)).json()).syncQueued,false);
+   clock+=179000;await calendarMaintenance(f.env,false);assert.equal(sent.length,1);assert.equal(calls.length,0);assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_snapshots WHERE week_start=?').get(nextWeek),waiting,'an uncertain send cannot pretend to have completed or acknowledged changes');
+   clock+=2000;await calendarMaintenance(f.env,false);assert.deepEqual(sent,[{week:nextWeek},{week:nextWeek}]);assert.equal(calls.length,0);
+   const message=queueMessage(sent[1]);await consume(f,[message]);assert.deepEqual(message.result,{acks:1,retries:[]});const complete=f.sqlite.prepare('SELECT * FROM calendar_snapshots WHERE week_start=?').get(nextWeek);assert.ok(complete.synced_at>0);assert.equal(complete.error_code,null);assert.equal(JSON.parse(complete.data)[0].summary,'Recovered accepted job');assert.equal(complete.change_revision,4);assert.equal(complete.attempt_revision,4);assert.equal(f.connection().change_revision,5,'new list-bootstrap changes remain pending beyond the captured successful generation');
+   assert.deepEqual(warnings,[[JSON.stringify({event:'calendar_queue_failed',code:'send_failed'})]],'the uncertain result logs no raw queue exception');
+  });
+ }finally{Date.now=realNow;console.warn=previousWarn;}
+});
+
+test('a killed consumer with an active source lease and admission gate recovers after both expire',async()=>{
+ const realNow=Date.now;let clock=Date.parse(week+'T12:00:00+08:00');Date.now=()=>clock;
+ try{
+  const f=await fixture(),sent=[],old=now()-601;f.env.CALENDAR_SYNC_QUEUE={async send(body){sent.push(body);}};
+  f.sqlite.prepare('INSERT INTO calendar_snapshots(member_sub,week_start,room_revision,connection_version,data,synced_at,retry_at,lease_id,lease_until,change_revision,attempt_revision) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(sub,week,2,version,JSON.stringify([{summary:'Last complete cache'}]),old,now()-1,'killed-consumer',now()+180,0,1);
+  f.sqlite.exec('UPDATE calendar_connections SET change_revision=1');f.sqlite.prepare('INSERT INTO calendar_enqueue_gates(week_start,regular_until,manual_until) VALUES(?,?,?)').run(week,now()+180,0);
+  const before=f.sqlite.prepare('SELECT * FROM calendar_snapshots').get();
+  await mocked(google({title:'Recovered killed consumer'}),async calls=>{
+   await calendarMaintenance(f.env,false);clock+=179000;await calendarMaintenance(f.env,false);assert.deepEqual(sent,[]);assert.equal(calls.length,0);assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_snapshots').get(),before,'hard termination leaves the prior success and generation unchanged');
+   clock+=2000;await calendarMaintenance(f.env,false);assert.deepEqual(sent,[{week}]);assert.equal(calls.length,0);const message=queueMessage(sent[0]);await consume(f,[message]);assert.deepEqual(message.result,{acks:1,retries:[]});
+   const complete=f.sqlite.prepare('SELECT * FROM calendar_snapshots').get();assert.ok(complete.synced_at>old);assert.equal(complete.lease_until,0);assert.equal(complete.error_code,null);assert.equal(complete.change_revision,1);assert.equal(complete.attempt_revision,1);assert.equal(JSON.parse(complete.data)[0].summary,'Recovered killed consumer');
+  });
+ }finally{Date.now=realNow;}
+});
+
+test('a still-gated oldest week does not block a different eligible week in minute maintenance',async()=>{
+ const f=await fixture(),sent=[];f.env.CALENDAR_SYNC_QUEUE={async send(body){sent.push(body);}};
+ for(const [day,retry] of [[week,0],[nextWeek,1]])f.sqlite.prepare('INSERT INTO calendar_snapshots(member_sub,week_start,room_revision,connection_version,data,synced_at,retry_at) VALUES(?,?,?,?,?,?,?)').run(sub,day,2,version,'[]',now()-601,retry);
+ f.sqlite.prepare('INSERT INTO calendar_enqueue_gates(week_start,regular_until,manual_until) VALUES(?,?,?)').run(week,now()+180,0);const before=f.sqlite.prepare('SELECT * FROM calendar_snapshots ORDER BY week_start').all();
+ await mocked(()=>{throw Error('maintenance cannot contact Google');},async calls=>{await calendarMaintenance(f.env,false);assert.deepEqual(sent,[{week:nextWeek}]);assert.equal(calls.length,0);assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_snapshots ORDER BY week_start').all(),before);});
+});
+
+test('sixty queued minute ticks handle thirty simultaneously due caches and rebuild one lost job within the freshness deadline',async()=>{
+ const realNow=Date.now;let clock=Date.parse(week+'T12:00:00+08:00')+86400000;Date.now=()=>clock;
+ try{
+  const f=await fixture(),members=[sub,...Array.from({length:5},(_,i)=>'rotation-member-'+i)],weeks=Array.from({length:5},(_,i)=>new Date(Date.parse(week+'T00:00:00Z')+i*7*86400000).toISOString().slice(0,10)),pending=[],jobs=[];
+  for(const member of members.slice(1))await addSource(f,member);
+  await mocked(google({title:'Live rotating reservation'}),async calls=>{
+   // All thirty caches finish at the same time, as after a manual refresh.
+   // At minute ten they all become due together; this must not go stale while
+   // the producer safely splits one selected week's work into small jobs.
+   for(const day of weeks)await syncCalendars(f.env,day);await syncCalendars(f.env,week);
+   const started=now();assert.equal(f.sqlite.prepare('SELECT COUNT(DISTINCT synced_at) AS n FROM calendar_snapshots').get().n,1);
+   const record=body=>{pending.push(body);jobs.push({body,time:now()});};f.env.CALENDAR_SYNC_QUEUE={async send(body){record(body);},async sendBatch(messages){messages.forEach(message=>record(message.body));}};
+   let lost=null,recovered=false,processed=0;
+   for(let tick=0;tick<60;tick++){
+    const before=jobs.length;await calendarMaintenance(f.env,tick%10===0);assert.ok(jobs.length-before<=3,'one minute sends at most three small CPU-isolated jobs');
+    for(const body of pending.splice(0)){
+     if(tick===10&&!lost){lost={body,time:now()};continue;}
+     const readCount=calls.length,message=queueMessage(body);await consume(f,[message]);assert.deepEqual(message.result,{acks:1,retries:[]});
+     const refreshes=calls.slice(readCount).filter(call=>new URL(call.url).hostname==='oauth2.googleapis.com');assert.ok(refreshes.length<=2,'each consumer keeps its source allowance');assert.ok(eventReads(calls.slice(readCount)).every(call=>new URL(call.url).searchParams.get('timeMin').slice(0,10)===body.week));processed++;
+     if(lost&&body.week===lost.body.week&&now()-lost.time>=180)recovered=true;
+    }
+    const rows=f.sqlite.prepare('SELECT * FROM calendar_snapshots').all();assert.equal(rows.length,30);assert.ok(rows.every(row=>row.synced_at>0&&now()-row.synced_at<=1200&&row.error_code===null&&row.lease_until===0),'every visible source/week stays within the existing twenty-minute freshness deadline at minute '+tick);
+    assert.ok(rows.every(row=>row.change_revision===f.sqlite.prepare('SELECT change_revision FROM calendar_connections WHERE member_sub=?').get(row.member_sub).change_revision));clock+=60000;
+   }
+   assert.ok(lost,'the test really discards a sent job without acknowledgment');assert.ok(recovered,'durable due data rebuilds the lost week after the gate expires');assert.ok(processed>=30,'the queue really executes multiple refresh cycles');assert.ok(f.sqlite.prepare('SELECT MIN(synced_at) AS oldest FROM calendar_snapshots').get().oldest>started);assert.ok(jobs.some(job=>job.body.week===lost.body.week&&job.time>=lost.time+180));
   });
  }finally{Date.now=realNow;}
 });
