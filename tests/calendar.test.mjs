@@ -524,24 +524,37 @@ test('expired source responses cannot change grant metadata, prune current calen
   }
 });
 
-test('a shared-calendar 401 revokes the grant even when primary 503 is the first rejection in its batch',async()=>{
-  const {f,owner}=await team();await f.connect('admin');f.sqlite.exec('UPDATE calendar_connections SET shared_calendars=1');
-  const nextWeek=new Date(Date.parse(week+'T00:00:00Z')+7*86400000).toISOString().slice(0,10);let fail=false;
-  await mocked(async(url)=>{
-    if(url.hostname==='oauth2.googleapis.com')return json({access_token:'fixture-access',scope:'https://www.googleapis.com/auth/calendar.events.readonly '+listScope});
-    if(url.pathname.endsWith('/calendarList'))return json({items:[{id:companyCalendar,accessRole:'reader'}]});
-    if(fail){if(calendarId(url)==='primary')return json({error:'temporary'},503);await new Promise(resolve=>setImmediate(resolve));return json({error:'unauthorized'},401);}
-    const date=url.searchParams.get('timeMin').slice(0,10),id=calendarId(url)==='primary'?'primary':'shared';return json({accessRole:'reader',items:[{...meeting,id:id+'-'+date,iCalUID:id+'-'+date}]});
-  },async calls=>{
-    for(const day of [week,nextWeek])await f.get('calendar/feed?day='+day,owner);
-    assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_snapshots WHERE member_sub=?').get('admin').n,2);
-    fail=true;f.sqlite.prepare('UPDATE calendar_snapshots SET retry_at=0 WHERE member_sub=? AND week_start=?').run('admin',week);
-    const feed=await (await f.get('calendar/feed?day='+week,owner)).json(),own=feed.sources.find(source=>source.email===admin);
-    assert.equal(own.state,'reauthorize');assert.deepEqual(own.events,[]);assert.equal(own.syncedAt,null);
-    const connection=f.sqlite.prepare('SELECT status,refresh_cipher FROM calendar_connections WHERE member_sub=?').get('admin');assert.equal(connection.status,'reauthorize');assert.equal(connection.refresh_cipher,'');
-    assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_snapshots WHERE member_sub=?').get('admin').n,0);
-    const count=calls.length,next=await (await f.get('calendar/feed?day='+nextWeek,owner)).json();assert.equal(next.sources.find(source=>source.email===admin).state,'reauthorize');assert.deepEqual(next.sources.find(source=>source.email===admin).events,[]);assert.equal(calls.length,count,'an invalid grant is not retried without new consent');
-  });
+test('Calendar and non-invalid-grant token 401s preserve the complete grant and caches, then recover through background refresh',async()=>{
+  const realNow=Date.now;let clock=realNow();Date.now=()=>clock;
+  try{
+    for(const failedPath of ['calendarList','primaryEvents','sharedEvents','mixedBatch','tokenConfig','calendarNotGrant']){
+      const {f,owner}=await team();await f.connect('admin');f.sqlite.exec('UPDATE calendar_connections SET shared_calendars=1');
+      const nextWeek=new Date(Date.parse(week+'T00:00:00Z')+7*86400000).toISOString().slice(0,10);let fail=false,recovered=false;
+      await mocked(async(url)=>{
+        if(url.hostname==='oauth2.googleapis.com')return fail&&failedPath==='tokenConfig'?json({error:'invalid_client'},401):json({access_token:recovered?'fresh-recovered-access':'fixture-access',scope:fullScopes});
+        if(url.pathname.endsWith('/calendarList'))return fail&&failedPath==='calendarList'?json({error:{code:401,errors:[{reason:'authError'}]}},401):json({items:[{id:companyCalendar,accessRole:'reader'}]});
+        const id=calendarId(url)==='primary'?'primary':'shared';
+        if(fail){
+          if(failedPath==='mixedBatch'&&id==='primary')return json({error:'temporary'},503);
+          if((failedPath==='primaryEvents'&&id==='primary')||((failedPath==='sharedEvents'||failedPath==='mixedBatch')&&id==='shared')){await new Promise(resolve=>setImmediate(resolve));return json({error:{code:401,errors:[{reason:'authError'}]}},401);}
+          // Only the OAuth token endpoint can assert that a refresh grant failed.
+          if(failedPath==='calendarNotGrant'&&id==='shared')return json({error:'invalid_grant'},401);
+        }
+        const date=url.searchParams.get('timeMin').slice(0,10);return json({accessRole:'reader',items:[{...meeting,id:id+'-'+date,iCalUID:id+'-'+date,summary:recovered?'Recovered reservation':'Last complete reservation',start:{dateTime:date+'T10:00:00+08:00'},end:{dateTime:date+'T11:00:00+08:00'}}]});
+      },async calls=>{
+        for(const day of [week,nextWeek,week])await f.get('calendar/feed?day='+day,owner);
+        const previous=f.sqlite.prepare('SELECT data,synced_at FROM calendar_snapshots WHERE member_sub=? AND week_start=?').get('admin',week),otherWeek=f.sqlite.prepare('SELECT * FROM calendar_snapshots WHERE member_sub=? AND week_start=?').get('admin',nextWeek),grant=f.sqlite.prepare('SELECT * FROM calendar_connections WHERE member_sub=?').get('admin');assert.equal((await (await f.get('me',owner)).json()).calendarAuthorizationRequired,false);
+        fail=true;f.sqlite.prepare('UPDATE calendar_snapshots SET retry_at=0 WHERE member_sub=? AND week_start=?').run('admin',week);
+        const failed=await (await f.get('calendar/feed?day='+week,owner)).json(),own=failed.sources.find(source=>source.email===admin);
+        assert.equal(own.state,'error',failedPath);assert.equal(own.sharedCalendars,true);assert.equal(own.events.length,2);assert.equal(own.syncedAt,previous.synced_at);assert.deepEqual(f.sqlite.prepare('SELECT data,synced_at FROM calendar_snapshots WHERE member_sub=? AND week_start=?').get('admin',week),previous,'a rejected access token never advances successful data or time');assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_connections WHERE member_sub=?').get('admin'),grant,'encrypted refresh grant and complete scope capability stay unchanged');assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_snapshots WHERE member_sub=? AND week_start=?').get('admin',nextWeek),otherWeek,'another cached week must not be erased');assert.equal((await (await f.get('me',owner)).json()).calendarAuthorizationRequired,false);
+        const failedSnapshot=f.sqlite.prepare('SELECT error_code,retry_at,lease_until FROM calendar_snapshots WHERE member_sub=? AND week_start=?').get('admin',week);assert.equal(failedSnapshot.error_code,'SYNC_FAILED');assert.equal(failedSnapshot.lease_until,0);assert.ok(failedSnapshot.retry_at>Math.floor(clock/1000));
+        const count=calls.length;await f.get('calendar/feed?day='+week,owner);assert.equal(calls.length,count,'the same failure respects normal retry backoff instead of asking for consent');
+        fail=false;recovered=true;clock+=601000;await calendarMaintenance(f.env,false);
+        const fresh=await (await f.get('calendar/feed?day='+week,owner)).json(),complete=fresh.sources.find(source=>source.email===admin);assert.equal(complete.state,'ready');assert.equal(complete.sharedCalendars,true);assert.ok(complete.syncedAt>previous.synced_at);assert.equal(complete.events.length,2);assert.ok(complete.events.every(event=>event.summary==='Recovered reservation'));assert.equal((await (await f.get('me',owner)).json()).calendarAuthorizationRequired,false);
+        const newCalls=calls.slice(count);assert.equal(newCalls.filter(call=>new URL(call.url).hostname==='oauth2.googleapis.com').length,1,'recovery uses the existing background refresh grant');assert.equal(newCalls.filter(call=>new URL(call.url).pathname.endsWith('/events')).length,2);assert.ok(newCalls.filter(call=>new URL(call.url).pathname.endsWith('/events')).every(call=>call.options.headers.Authorization==='Bearer fresh-recovered-access'));assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_connections WHERE member_sub=?').get('admin'),grant);
+      });
+    }
+  }finally{Date.now=realNow;}
 });
 
 test('room matching skips unrelated, cancelled and declined copies, preserves exact times, minimizes attendees',()=>{

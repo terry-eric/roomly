@@ -5,8 +5,9 @@ import {calendarWebhook} from './calendar-watch.ts';
 const googleKeys = createRemoteJWKSet(new URL('https://www.googleapis.com/oauth2/v3/certs'));
 const base='/roomly/', sessionName='roomly_session', nonceName='roomly_login';
 const codeLoginName='roomly_code_login',loginCallbackPath=base+'api/login/redirect',codeNoncePrefix='code:';
-const sessionAge=12*3600, nonceAge=600;
+const sessionAge=30*86400, sessionRenewInterval=86400, nonceAge=600;
 type Member={sub:string;email:string;name:string;role:'admin'|'member';status:'pending'|'approved'|'rejected';requested_at:number;reviewed_at:number|null;reviewed_by:string|null};
+type SessionMember=Member&{sessionExpiresAt:number;sessionHash:string};
 type Notification={id:string;member_sub:string;state:string;attempts:number;next_attempt_at:number;lease_until:number;email:string;name:string};
 type Identity={sub:string;email:string;name:string;emailAuthoritative:boolean};
 type Verifier=(credential:string,clientId:string,nonce:string)=>Promise<Identity>;
@@ -67,7 +68,15 @@ export async function verifyCredential(credential:string,clientId:string,nonce:s
 }
 async function memberFor(request:Request,env:Env){
   const token=readCookie(request,sessionName);if(!/^[a-f0-9]{64}$/.test(token))return null;
-  return env.DB.prepare('SELECT m.* FROM sessions s JOIN members m ON m.sub=s.member_sub WHERE s.hash=? AND s.expires_at>?').bind(await hash(token),now()).first<Member>();
+  return env.DB.prepare('SELECT m.*,s.expires_at AS sessionExpiresAt,s.hash AS sessionHash FROM sessions s JOIN members m ON m.sub=s.member_sub WHERE s.hash=? AND s.expires_at>?').bind(await hash(token),now()).first<SessionMember>();
+}
+async function renewSession(request:Request,env:Env,member:SessionMember){
+  const time=now(),threshold=time+sessionAge-sessionRenewInterval;
+  if(member.status!=='approved'||member.sessionExpiresAt>threshold)return [];
+  // Keep the same token so parallel requests and an in-flight OAuth callback
+  // stay valid. A conditional UPDATE cannot revive logout or expired sessions.
+  const renewed=await env.DB.prepare("UPDATE sessions SET expires_at=? WHERE hash=? AND member_sub=? AND expires_at>? AND expires_at<=? AND EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') RETURNING expires_at").bind(time+sessionAge,member.sessionHash,member.sub,time,threshold,member.sub).first<{expires_at:number}>();
+  return renewed?[cookie(sessionName,readCookie(request,sessionName),Math.max(0,renewed.expires_at-now()))]:[];
 }
 function isAdmin(member:Member|null,env:Env){return !!member&&member.role==='admin'&&member.status==='approved'&&member.email===env.ADMIN_EMAIL;}
 export async function deliverNotifications(env:Env,onlyId?:string){
@@ -240,7 +249,7 @@ export function createHandler(verify:Verifier=verifyCredential){return {
           const calendarRevision=revision?await hash(String(revision.calendar_revision)):null;
           const connection=approved&&calendarConfigured?await env.DB.prepare('SELECT status,shared_calendars FROM calendar_connections WHERE member_sub=?').bind(member.sub).first<{status:string;shared_calendars:number}>():null;
           const calendarAuthorizationRequired=!!approved&&calendarConfigured&&(!connection||connection.status!=='connected'||!connection.shared_calendars);
-          return json({email:member.email,name:member.name,status:member.status,isAdmin:isAdmin(member,env),notification:env.EMAIL&&env.MAIL_FROM?(notice?.state||null):'disabled',pending:pending?.count||0,sourcesRevision,calendarRevision,calendarConfigured,calendarAuthorizationRequired});
+          return json({email:member.email,name:member.name,status:member.status,isAdmin:isAdmin(member,env),notification:env.EMAIL&&env.MAIL_FROM?(notice?.state||null):'disabled',pending:pending?.count||0,sourcesRevision,calendarRevision,calendarConfigured,calendarAuthorizationRequired},200,await renewSession(request,env,member));
         }
         if(apiPath==='calendar-sources'&&request.method==='GET'){
           if(member.status!=='approved')throw new HttpError(403,'通過白名單後才能讀取日曆來源。');

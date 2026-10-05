@@ -364,6 +364,80 @@ test('logout and expiration invalidate sessions',async()=>{
   assert.equal((await f.call('api/me',{headers:{Cookie:owner.cookie}})).status,401);
   const next=await f.login(admin,'admin');f.sqlite.exec('UPDATE sessions SET expires_at=1');assert.equal((await f.call('api/me',{headers:{Cookie:next.cookie}})).status,401);
 });
+test('new login keeps a hashed thirty-day session with a protected cookie and no internal session data in me',async()=>{
+ const realNow=Date.now;let clock=Date.parse('2026-10-05T12:00:00+08:00');Date.now=()=>clock;
+ try{
+  const f=fixture(),owner=await f.login(admin,'admin'),token=owner.cookie.split('=')[1],session=f.sqlite.prepare('SELECT * FROM sessions').get(),sessionCookie=owner.response.headers.getSetCookie().find(value=>value.startsWith('roomly_session='));
+  assert.equal(session.expires_at,Math.floor(clock/1000)+30*86400);assert.equal(session.hash,await hash(token));assert.ok(!JSON.stringify(session).includes(token));
+  assert.match(sessionCookie,/Max-Age=2592000(?:;|$)/);assert.match(sessionCookie,/Path=\/roomly\/;.*HttpOnly; Secure; SameSite=Lax/);
+  const response=await f.call('api/me',{headers:{Cookie:owner.cookie}}),data=await response.json();assert.equal(response.status,200);assert.equal(data.status,'approved');assert.equal(response.headers.get('Cache-Control'),'private, no-store');assert.deepEqual(response.headers.getSetCookie(),[]);
+  assert.equal(data.sessionHash,undefined);assert.equal(data.sessionExpiresAt,undefined);assert.ok(!JSON.stringify(data).includes(token));assert.ok(!JSON.stringify(data).includes(session.hash));
+ }finally{Date.now=realNow;}
+});
+
+test('active me renews at exactly twenty-four hours and ten parallel requests change the session only once',async()=>{
+ const realNow=Date.now;let clock=Date.parse('2026-10-05T12:00:00+08:00');Date.now=()=>clock;
+ try{
+  const f=fixture(),owner=await f.login(admin,'admin'),initial=f.sqlite.prepare('SELECT * FROM sessions').get(),prepare=f.env.DB.prepare.bind(f.env.DB);let attempts=0,writes=0;
+  f.env.DB.prepare=sql=>{const statement=prepare(sql);if(sql.startsWith('UPDATE sessions SET expires_at=')){const first=statement.first.bind(statement);statement.first=async()=>{attempts++;const row=await first();if(row)writes++;return row;};}return statement;};
+  clock+=86399000;const early=await f.call('api/me',{headers:{Cookie:owner.cookie}});assert.equal(early.status,200);assert.deepEqual(early.headers.getSetCookie(),[]);assert.equal(attempts,0);assert.equal(f.sqlite.prepare('SELECT expires_at FROM sessions').get().expires_at,initial.expires_at);
+  clock+=1000;const responses=await Promise.all(Array.from({length:10},()=>f.call('api/me',{headers:{Cookie:owner.cookie}})));assert.ok(responses.every(response=>response.status===200));assert.equal(writes,1,'conditional renewal has exactly one successful database mutation');assert.equal(responses.filter(response=>response.headers.getSetCookie().length>0).length,1);
+  const renewedCookie=responses.flatMap(response=>response.headers.getSetCookie());assert.equal(renewedCookie.length,1);assert.equal(renewedCookie[0].split(';')[0],owner.cookie,'renewal retains the token already bound to in-flight requests');assert.match(renewedCookie[0],/Max-Age=2592000(?:;|$)/);assert.match(renewedCookie[0],/HttpOnly; Secure; SameSite=Lax/);
+  const renewed=f.sqlite.prepare('SELECT * FROM sessions').get();assert.equal(renewed.hash,initial.hash);assert.equal(renewed.expires_at,Math.floor(clock/1000)+30*86400);
+  const attempted=attempts;clock+=86399000;const repeated=await f.call('api/me',{headers:{Cookie:owner.cookie}});assert.equal(repeated.status,200);assert.deepEqual(repeated.headers.getSetCookie(),[]);assert.equal(writes,1);assert.equal(attempts,attempted,'routine minute polling does not perform renewal writes');assert.equal(f.sqlite.prepare('SELECT expires_at FROM sessions').get().expires_at,renewed.expires_at);
+ }finally{Date.now=realNow;}
+});
+
+test('an existing twelve-hour session upgrades only while it remains valid',async()=>{
+ const realNow=Date.now;let clock=Date.parse('2026-10-05T12:00:00+08:00');Date.now=()=>clock;
+ try{
+  const f=fixture(),owner=await f.login(admin,'admin'),oldExpiry=Math.floor(clock/1000)+12*3600;f.sqlite.prepare('UPDATE sessions SET expires_at=?').run(oldExpiry);clock+=60000;
+  const response=await f.call('api/me',{headers:{Cookie:owner.cookie}});assert.equal(response.status,200);assert.equal(response.headers.getSetCookie().length,1);assert.equal(response.headers.getSetCookie()[0].split(';')[0],owner.cookie);assert.equal(f.sqlite.prepare('SELECT expires_at FROM sessions').get().expires_at,Math.floor(clock/1000)+30*86400);
+ }finally{Date.now=realNow;}
+});
+
+test('an exactly expired or already deleted session is unauthorized and cannot be restored by renewal',async()=>{
+ const realNow=Date.now;let clock=Date.parse('2026-10-05T12:00:00+08:00');Date.now=()=>clock;
+ try{
+  for(const scenario of ['exact-expiry','deleted']){
+   const f=fixture(),owner=await f.login(admin,'admin');if(scenario==='deleted')f.sqlite.exec('DELETE FROM sessions');else f.sqlite.prepare('UPDATE sessions SET expires_at=?').run(Math.floor(clock/1000));const before=f.sqlite.prepare('SELECT * FROM sessions').all();
+   const response=await f.call('api/me',{headers:{Cookie:owner.cookie}});assert.equal(response.status,401,scenario);assert.deepEqual(response.headers.getSetCookie(),[],scenario);assert.deepEqual(f.sqlite.prepare('SELECT * FROM sessions').all(),before,scenario);
+  }
+ }finally{Date.now=realNow;}
+});
+
+test('pending and withdrawn members do not extend sessions and withdrawal still blocks private routes after renewal',async()=>{
+ const realNow=Date.now;let clock=Date.parse('2026-10-05T12:00:00+08:00');Date.now=()=>clock;
+ try{
+  const f=fixture(),owner=await f.login(admin,'admin'),user=await f.login('renew-user@gmail.com','renew-user');clock+=86400000;
+  const pendingExpiry=f.sqlite.prepare("SELECT expires_at FROM sessions WHERE member_sub='renew-user'").get().expires_at,pending=await f.call('api/me',{headers:{Cookie:user.cookie}});assert.equal((await pending.json()).status,'pending');assert.deepEqual(pending.headers.getSetCookie(),[]);assert.equal(f.sqlite.prepare("SELECT expires_at FROM sessions WHERE member_sub='renew-user'").get().expires_at,pendingExpiry);
+  await f.post('api/admin/review',{sub:'renew-user',status:'approved'},owner.cookie);const renewed=await f.call('api/me',{headers:{Cookie:user.cookie}});assert.equal((await renewed.json()).status,'approved');assert.equal(renewed.headers.getSetCookie().length,1);const approvedExpiry=f.sqlite.prepare("SELECT expires_at FROM sessions WHERE member_sub='renew-user'").get().expires_at;
+  clock+=86400000;assert.equal((await f.post('api/admin/review',{sub:'renew-user',status:'rejected'},owner.cookie)).status,200);const withdrawn=await f.call('api/me',{headers:{Cookie:user.cookie}}),data=await withdrawn.json();assert.equal(data.status,'rejected');assert.equal(data.sourcesRevision,null);assert.deepEqual(withdrawn.headers.getSetCookie(),[]);assert.equal(f.sqlite.prepare("SELECT expires_at FROM sessions WHERE member_sub='renew-user'").get().expires_at,approvedExpiry);
+  assert.equal((await f.call('api/calendar/feed',{headers:{Cookie:user.cookie}})).status,403);assert.equal((await f.call('api/calendar-sources',{headers:{Cookie:user.cookie}})).status,403);assert.equal(await (await f.call('',{headers:{Cookie:user.cookie}})).text(),'/roomly/auth.html');
+ }finally{Date.now=realNow;}
+});
+
+test('deletion, expiry and revocation between member lookup and renewal cannot revive the session',async()=>{
+ const realNow=Date.now;
+ try{
+  for(const scenario of ['deleted','expired','clock-expired','revoked']){
+   let clock=Date.parse('2026-10-05T12:00:00+08:00');Date.now=()=>clock;const f=fixture(),owner=await f.login(admin,'admin');clock+=86400000;const previous=f.sqlite.prepare('SELECT * FROM sessions').get(),prepare=f.env.DB.prepare.bind(f.env.DB);let injected=false;
+   f.env.DB.prepare=sql=>{const statement=prepare(sql);if(sql.includes('FROM sessions s JOIN members m')){const first=statement.first.bind(statement);statement.first=async()=>{const row=await first();if(row&&!injected){injected=true;if(scenario==='deleted')f.sqlite.exec('DELETE FROM sessions');else if(scenario==='expired')f.sqlite.prepare('UPDATE sessions SET expires_at=?').run(Math.floor(clock/1000));else if(scenario==='clock-expired')clock=previous.expires_at*1000;else f.sqlite.exec("UPDATE members SET status='rejected' WHERE sub='admin'");}return row;};}return statement;};
+   const response=await f.call('api/me',{headers:{Cookie:owner.cookie}});assert.equal(response.status,200,scenario);assert.ok(injected,scenario);assert.deepEqual(response.headers.getSetCookie(),[],scenario+' must not issue a refreshed browser credential');
+   const after=f.sqlite.prepare('SELECT * FROM sessions').get();if(scenario==='deleted')assert.equal(after,undefined);else assert.equal(after.expires_at,scenario==='expired'?Math.floor(clock/1000):previous.expires_at,scenario+' cannot acquire a later lifetime');
+   const next=await f.call('api/me',{headers:{Cookie:owner.cookie}});if(scenario==='revoked'){assert.equal(next.status,200);assert.equal((await next.json()).status,'rejected');assert.equal((await f.call('api/calendar/feed',{headers:{Cookie:owner.cookie}})).status,403);}else assert.equal(next.status,401,scenario);assert.deepEqual(next.headers.getSetCookie(),[]);
+  }
+ }finally{Date.now=realNow;}
+});
+
+test('logout revokes a renewed token even when a previously renewed response arrives afterward',async()=>{
+ const realNow=Date.now;let clock=Date.parse('2026-10-05T12:00:00+08:00');Date.now=()=>clock;
+ try{
+  const f=fixture(),owner=await f.login(admin,'admin');clock+=86400000;const renewed=await f.call('api/me',{headers:{Cookie:owner.cookie}});assert.equal(renewed.headers.getSetCookie().length,1);const staleCookie=renewed.headers.getSetCookie()[0].split(';')[0];
+  const logout=await f.post('api/logout',{},owner.cookie);assert.equal(logout.status,200);assert.ok(logout.headers.getSetCookie().some(value=>value.startsWith('roomly_session=;')&&value.includes('Max-Age=0')));assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM sessions').get().n,0);
+  const next=await f.call('api/me',{headers:{Cookie:staleCookie}});assert.equal(next.status,401);assert.deepEqual(next.headers.getSetCookie(),[]);assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM sessions').get().n,0,'a late same-token cookie does not recreate the revoked database session');
+ }finally{Date.now=realNow;}
+});
 test('failed notification stays queued, retries once and concurrent delivery holds a lease',async()=>{
   const f=fixture();f.env.EMAIL.send=async()=>{throw Error('provider failure');};await f.login();
   const queued=f.sqlite.prepare('SELECT * FROM notifications').get();assert.equal(queued.state,'queued');assert.equal(queued.attempts,1);assert.equal(queued.error_code,'EMAIL_SEND_FAILED');
