@@ -13,6 +13,7 @@ function fixture(verifier=async credential=>JSON.parse(credential)){
   sqlite.exec(readFileSync(new URL('../migrations/0005_calendar_watch.sql',import.meta.url),'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0006_calendar_revision.sql',import.meta.url),'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0007_calendar_enqueue_gates.sql',import.meta.url),'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0008_feed_cache.sql',import.meta.url),'utf8'));
   const DB={prepare(sql){let values=[];const statement=sqlite.prepare(sql);return {bind(...v){values=v;return this;},async first(){return statement.get(...values)||null;},async all(){return {results:statement.all(...values)};},async run(){const r=statement.run(...values);return {meta:{changes:r.changes}};}};},async batch(statements){return Promise.all(statements.map(s=>s.run()));}};
   const mail=[],pending=[];
   const env={DB,EMAIL:{async send(message){mail.push(message);}},ASSETS:{async fetch(r){return new Response(new URL(r.url).pathname,{headers:{'Content-Type':'text/html'}});}},APP_ORIGIN:origin,GOOGLE_CLIENT_ID:'client',ADMIN_EMAIL:admin,MAIL_FROM:'roomly@example.com'};
@@ -36,31 +37,6 @@ test('real signed identity requires Google issuer, audience, nonce, verified ema
   assert.equal((await verifyCredential(await sign({...defaults,email:'person@company.com'}),'client','nonce',keys)).emailAuthoritative,false);
   for(const change of [{iss:'https://evil.example'},{aud:'wrong'},{nonce:'other'},{email_verified:false},{sub:''},{exp:1},{iat:1}])await assert.rejects(verifyCredential(await sign({...defaults,...change}),'client','nonce',keys));
   const other=await generateKeyPair('RS256');const forged=await new SignJWT(defaults).setProtectedHeader({alg:'RS256',kid:'test'}).sign(other.privateKey);await assert.rejects(verifyCredential(forged,'client','nonce',keys));
-});
-
-test('configured administrator may use authoritative Workspace identity, but third-party email is not auto-approved',async()=>{
-  for(const emailAuthoritative of [true,false]){
-    const f=fixture();f.env.ADMIN_EMAIL='admin@example.com';
-    const user=await f.login('admin@example.com','configured-admin',{emailAuthoritative});
-    const me=await (await f.call('api/me',{headers:{Cookie:user.cookie}})).json();
-    assert.equal(me.isAdmin,emailAuthoritative);
-    assert.equal(me.status,emailAuthoritative?'approved':'pending');
-    assert.equal((await f.call('api/admin/members',{headers:{Cookie:user.cookie}})).status,emailAuthoritative?200:403);
-  }
-});
-
-test('optional email leaves a persisted approval request without retry attempts and reports manual review',async()=>{
-  const f=fixture();delete f.env.EMAIL;
-  const user=await f.login();
-  let notice=f.sqlite.prepare('SELECT state,attempts FROM notifications').get();
-  assert.equal(notice.state,'queued');assert.equal(notice.attempts,0);assert.equal(f.mail.length,0);
-  const me=await (await f.call('api/me',{headers:{Cookie:user.cookie}})).json();assert.equal(me.notification,'disabled');
-  await deliverNotifications(f.env);
-  notice=f.sqlite.prepare('SELECT state,attempts FROM notifications').get();assert.equal(notice.attempts,0);
-  const owner=await f.login(admin,'admin');
-  const members=await (await f.call('api/admin/members',{headers:{Cookie:owner.cookie}})).json();assert.equal(members.members.find(member=>member.sub==='member').notification,null);
-  assert.equal((await f.post('api/admin/review',{sub:'member',status:'approved'},owner.cookie)).status,200);
-  assert.equal((await (await f.call('api/me',{headers:{Cookie:user.cookie}})).json()).status,'approved');
 });
 test('anonymous pages and aliases are gated; admin records reject forged cookies',async()=>{
   const f=fixture();for(const path of ['', 'index','index.html','%69ndex.html','admin.html','admin']){
@@ -364,6 +340,7 @@ test('logout and expiration invalidate sessions',async()=>{
   assert.equal((await f.call('api/me',{headers:{Cookie:owner.cookie}})).status,401);
   const next=await f.login(admin,'admin');f.sqlite.exec('UPDATE sessions SET expires_at=1');assert.equal((await f.call('api/me',{headers:{Cookie:next.cookie}})).status,401);
 });
+
 test('new login keeps a hashed thirty-day session with a protected cookie and no internal session data in me',async()=>{
  const realNow=Date.now;let clock=Date.parse('2026-10-05T12:00:00+08:00');Date.now=()=>clock;
  try{
@@ -522,7 +499,41 @@ test('sources revision changes with approved source identities, excludes pending
   await f.post('api/admin/review',{sub:'pending',status:'approved'},owner.cookie);const expanded=await me(owner.cookie);assert.notEqual(expanded.sourcesRevision,first.sourcesRevision);assert.equal((await me(applicant.cookie)).sourcesRevision,expanded.sourcesRevision);
   f.sqlite.exec("UPDATE members SET name='Renamed',requested_at=999 WHERE sub='pending'");assert.equal((await me(owner.cookie)).sourcesRevision,expanded.sourcesRevision);
   f.sqlite.exec("UPDATE members SET email='updated@gmail.com' WHERE sub='pending'");assert.notEqual((await me(owner.cookie)).sourcesRevision,expanded.sourcesRevision,'a changed source email invalidates cached source metadata');
-  await f.post('api/admin/review',{sub:'pending',status:'rejected'},owner.cookie);assert.equal((await me(owner.cookie)).sourcesRevision,first.sourcesRevision);assert.equal((await me(applicant.cookie)).sourcesRevision,null);assert.equal(expanded.approved,undefined);assert.equal(expanded.sources,undefined);
+  await f.post('api/admin/review',{sub:'pending',status:'rejected'},owner.cookie);const removed=await me(owner.cookie);assert.notEqual(removed.sourcesRevision,expanded.sourcesRevision);assert.notEqual(removed.sourcesRevision,first.sourcesRevision,'removal uses a new monotonic identity even when the original member set is restored');assert.equal((await me(applicant.cookie)).sourcesRevision,null);assert.equal(expanded.approved,undefined);assert.equal(expanded.sources,undefined);
+});
+
+test('me reads fresh authentication and one metadata row without scanning approved identities',async()=>{
+ const f=fixture(),owner=await f.login(admin,'admin'),user=await f.login('reader@gmail.com','reader');f.sqlite.exec("UPDATE members SET status='approved' WHERE sub='reader'; UPDATE notifications SET state='queued' WHERE member_sub='reader';");
+ for(let i=0;i<30;i++)f.sqlite.prepare("INSERT INTO members(sub,email,name,role,status,requested_at) VALUES(?,?,'Fixture','member',?,1)").run('cost-member-'+i,'cost-member-'+i+'@example.test',i<20?'approved':'pending');
+ f.env.GOOGLE_CLIENT_SECRET='fixture-server-secret';f.env.CALENDAR_TOKEN_KEY='11'.repeat(32);f.sqlite.exec("INSERT INTO calendar_connections(member_sub,refresh_cipher,version,status,updated_at,shared_calendars) VALUES('reader','PRIVATE_REFRESH_CIPHER','fixture-version','connected',1,1)");
+ const prepare=f.env.DB.prepare.bind(f.env.DB),reads=[];
+ f.env.DB.prepare=sql=>{const statement=prepare(sql);for(const method of ['first','all']){const original=statement[method].bind(statement);statement[method]=async()=>{if(sql.trimStart().startsWith('SELECT'))reads.push({sql,method});if(method==='all'&&sql.includes("status='approved'"))throw Error('me must not enumerate approved members');return original();};}return statement;};
+ for(const [cookie,isAdmin,pending] of [[user.cookie,false,0],[owner.cookie,true,10]]){
+  reads.length=0;const response=await f.call('api/me',{headers:{Cookie:cookie}}),data=await response.json();assert.equal(response.status,200);assert.equal(reads.length,2,'one current session/member lookup plus one combined metadata query');assert.ok(reads[0].sql.includes('FROM sessions s JOIN members m'));assert.equal(reads.filter(read=>read.method==='all').length,0);assert.equal(data.isAdmin,isAdmin);assert.equal(data.pending,pending);assert.equal(data.calendarConfigured,true);assert.match(data.sourcesRevision,/^[a-f0-9]{64}$/);assert.match(data.calendarRevision,/^[a-f0-9]{64}$/);assert.equal(data.calendarAuthorizationRequired,isAdmin,'the connected reader grant is separate from the administrator without a grant');assert.ok(!JSON.stringify(data).includes('PRIVATE_REFRESH_CIPHER'));assert.equal(data.feed_revision,undefined);assert.equal(data.sources_revision,undefined);if(!isAdmin)assert.equal(data.notification,'queued');
+ }
+ const current=(await (await f.call('api/me',{headers:{Cookie:user.cookie}})).json()).sourcesRevision;f.sqlite.exec("UPDATE members SET status='rejected' WHERE sub='reader'");const rejected=await (await f.call('api/me',{headers:{Cookie:user.cookie}})).json();assert.equal(rejected.status,'rejected');assert.equal(rejected.sourcesRevision,null);assert.equal(rejected.calendarRevision,null);assert.equal(rejected.calendarAuthorizationRequired,false);assert.notEqual((await (await f.call('api/me',{headers:{Cookie:owner.cookie}})).json()).sourcesRevision,current);assert.equal((await f.call('api/calendar/feed',{headers:{Cookie:user.cookie}})).status,403);
+ await f.post('api/logout',{},user.cookie);reads.length=0;const loggedOut=await f.call('api/me',{headers:{Cookie:user.cookie}});assert.equal(loggedOut.status,401);assert.equal(reads.length,1,'a missing session never reaches cache metadata');
+});
+
+test('approved membership revisions change inside the same transaction and ignore no-op or unrelated changes',()=>{
+ const f=fixture(),read=()=>f.sqlite.prepare('SELECT sources_revision,calendar_revision,feed_revision FROM room_settings').get(),initial=read();
+ const insert=f.sqlite.prepare("INSERT INTO members(sub,email,name,role,status,requested_at) VALUES(?,?,'Fixture','member',?,1)");insert.run('other','other@example.test','pending');f.sqlite.exec("UPDATE members SET name='Renamed',email='different@example.test',status='rejected' WHERE sub='other'; DELETE FROM members WHERE sub='other';");assert.deepEqual(read(),initial);
+ f.sqlite.exec('BEGIN');insert.run('rollback','rollback@example.test','approved');assert.equal(read().sources_revision,initial.sources_revision+1);assert.equal(read().feed_revision,initial.feed_revision+1,'another read in the mutation transaction already has the new feed identity');f.sqlite.exec('ROLLBACK');assert.deepEqual(read(),initial,'rollback cannot publish a committed invalidation');
+ insert.run('active','active@example.test','approved');let previous=read();assert.equal(previous.sources_revision,initial.sources_revision+1);assert.equal(previous.feed_revision,initial.feed_revision+1);
+ f.sqlite.exec("UPDATE members SET name='Renamed',role='admin',requested_at=2 WHERE sub='active'; UPDATE members SET email=email,sub=sub,status=status WHERE sub='active';");assert.deepEqual(read(),previous);
+ for(const sql of ["UPDATE members SET email='updated@example.test' WHERE sub='active'","UPDATE members SET sub='renamed-active' WHERE sub='active'","UPDATE members SET status='rejected' WHERE sub='renamed-active'"]){f.sqlite.exec(sql);const current=read();assert.equal(current.sources_revision,previous.sources_revision+1);assert.equal(current.feed_revision,previous.feed_revision+1);assert.equal(current.calendar_revision,initial.calendar_revision);previous=current;}
+ f.sqlite.exec("UPDATE members SET status='pending',email='pending@example.test' WHERE sub='renamed-active'");assert.deepEqual(read(),previous);
+ f.sqlite.exec("UPDATE members SET status='approved' WHERE sub='renamed-active'");assert.equal(read().sources_revision,previous.sources_revision+1);assert.equal(read().feed_revision,previous.feed_revision+1);previous=read();f.sqlite.exec("DELETE FROM members WHERE sub='renamed-active'");assert.equal(read().sources_revision,previous.sources_revision+1);assert.equal(read().feed_revision,previous.feed_revision+1);
+});
+
+test('feed revision follows real committed timestamps while waiting rows and lease bookkeeping do not invalidate caches',()=>{
+ const f=fixture(),read=()=>f.sqlite.prepare('SELECT sources_revision,calendar_revision,feed_revision FROM room_settings').get();f.sqlite.exec("INSERT INTO members(sub,email,name,role,status,requested_at) VALUES('cached','cached@example.test','Fixture','member','approved',1); INSERT INTO calendar_connections(member_sub,refresh_cipher,version,status,updated_at,shared_calendars) VALUES('cached','fixture-cipher','version','connected',1,1)");const before=read();
+ f.sqlite.exec("INSERT INTO calendar_snapshots(member_sub,week_start,room_revision,connection_version) VALUES('cached','2026-10-05',1,'version'); UPDATE calendar_snapshots SET lease_until=999,lease_id='owner',retry_at=600,change_revision=2,attempt_revision=2;");assert.deepEqual(read(),before,'pending work has no completed data to cache');
+ f.sqlite.exec('UPDATE calendar_snapshots SET synced_at=10');const first=read();assert.equal(first.calendar_revision,before.calendar_revision+1);assert.equal(first.feed_revision,before.feed_revision+1,'first completion already uses the existing content revision trigger');
+ f.sqlite.exec('UPDATE calendar_snapshots SET synced_at=11');const fresh=read();assert.equal(fresh.calendar_revision,first.calendar_revision,'unchanged content need not announce a meeting change');assert.equal(fresh.feed_revision,first.feed_revision+1,'cached feeds must still show the updated success timestamp');
+ f.sqlite.exec('UPDATE calendar_snapshots SET synced_at=synced_at,lease_until=0,retry_at=601; UPDATE room_settings SET sources_revision=sources_revision,calendar_revision=calendar_revision');assert.deepEqual(read(),fresh);
+ f.sqlite.exec("UPDATE calendar_snapshots SET data='[{\"summary\":\"Changed meeting\"}]'");const changed=read();assert.equal(changed.calendar_revision,fresh.calendar_revision+1);assert.equal(changed.feed_revision,fresh.feed_revision+1);
+ f.sqlite.exec('UPDATE room_settings SET revision=revision+1');assert.equal(read().calendar_revision,changed.calendar_revision+1);assert.equal(read().feed_revision,changed.feed_revision+1);
 });
 
 test('a rejected applicant is never sent a delayed queued approval-request notification',async()=>{
@@ -554,4 +565,30 @@ test('me exposes only an opaque calendar content revision, without Google reads 
     f.sqlite.prepare('UPDATE calendar_snapshots SET data=?').run(JSON.stringify([{id:'event',summary:'fixture private meeting'}]));const changed=await me(owner.cookie);assert.notEqual(changed.calendarRevision,ready.calendarRevision);assert.equal(changed.sourcesRevision,before.sourcesRevision);assert.equal(changed.events,undefined);assert.equal(changed.data,undefined);assert.equal(changed.refresh_cipher,undefined);assert.ok(!JSON.stringify(changed).includes('fixture private meeting'));
     f.sqlite.exec('UPDATE calendar_snapshots SET data=data');assert.equal((await me(owner.cookie)).calendarRevision,changed.calendarRevision);f.sqlite.exec('DELETE FROM calendar_snapshots');assert.notEqual((await me(owner.cookie)).calendarRevision,changed.calendarRevision);assert.equal(calls.length,0);
   });
+});
+
+test('configured administrator may use authoritative Workspace identity, but third-party email is not auto-approved',async()=>{
+  for(const emailAuthoritative of [true,false]){
+    const f=fixture();f.env.ADMIN_EMAIL='admin@example.com';
+    const user=await f.login('admin@example.com','configured-admin',{emailAuthoritative});
+    const me=await (await f.call('api/me',{headers:{Cookie:user.cookie}})).json();
+    assert.equal(me.isAdmin,emailAuthoritative);
+    assert.equal(me.status,emailAuthoritative?'approved':'pending');
+    assert.equal((await f.call('api/admin/members',{headers:{Cookie:user.cookie}})).status,emailAuthoritative?200:403);
+  }
+});
+
+
+test('optional email leaves a persisted approval request without retry attempts and reports manual review',async()=>{
+  const f=fixture();delete f.env.EMAIL;
+  const user=await f.login();
+  let notice=f.sqlite.prepare('SELECT state,attempts FROM notifications').get();
+  assert.equal(notice.state,'queued');assert.equal(notice.attempts,0);assert.equal(f.mail.length,0);
+  const me=await (await f.call('api/me',{headers:{Cookie:user.cookie}})).json();assert.equal(me.notification,'disabled');
+  await deliverNotifications(f.env);
+  notice=f.sqlite.prepare('SELECT state,attempts FROM notifications').get();assert.equal(notice.attempts,0);
+  const owner=await f.login(admin,'admin');
+  const members=await (await f.call('api/admin/members',{headers:{Cookie:owner.cookie}})).json();assert.equal(members.members.find(member=>member.sub==='member').notification,null);
+  assert.equal((await f.post('api/admin/review',{sub:'member',status:'approved'},owner.cookie)).status,200);
+  assert.equal((await (await f.call('api/me',{headers:{Cookie:user.cookie}})).json()).status,'approved');
 });

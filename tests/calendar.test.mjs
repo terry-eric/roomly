@@ -11,8 +11,9 @@ const eventScope='https://www.googleapis.com/auth/calendar.events.readonly',list
 const meeting={id:'e1',iCalUID:'shared-invitation',summary:'共同會議',location:'台北 主會議室',start:{dateTime:week+'T10:00:00+08:00'},end:{dateTime:week+'T11:00:00+08:00'},attendees:[{email:'teammate@gmail.com',displayName:'成員',responseStatus:'accepted'}],description:'NEVER_STORE_PRIVATE_NOTES',attachments:[{fileUrl:'private-url'}],hangoutLink:'https://meet.google.com/abc-defg-hij'};
 const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
 function fixture(){
-  const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision','0007_calendar_enqueue_gates'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
-  const DB={prepare(sql){const s=sqlite.prepare(sql);let values=[];return {bind(...v){values=v;return this;},async first(){return s.get(...values)||null;},async all(){return {results:s.all(...values)};},run(){return {meta:{changes:s.run(...values).changes}};}};},async batch(statements){sqlite.exec('BEGIN');try{const values=statements.map(statement=>statement.run());sqlite.exec('COMMIT');return values;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
+  const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision','0007_calendar_enqueue_gates','0008_feed_cache'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+  const operations=[];
+  const DB={prepare(sql){const s=sqlite.prepare(sql);let values=[];return {bind(...v){values=v;return this;},async first(){operations.push({kind:'first',sql});return s.get(...values)||null;},async all(){operations.push({kind:'all',sql});return {results:s.all(...values)};},run(){const changes=s.run(...values).changes;operations.push({kind:'run',sql,changes});return {meta:{changes}};}};},async batch(statements){sqlite.exec('BEGIN');try{const values=statements.map(statement=>statement.run());sqlite.exec('COMMIT');return values;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
   const env={DB,EMAIL:{async send(){}},ASSETS:{async fetch(){return new Response('asset');}},APP_ORIGIN:origin,GOOGLE_CLIENT_ID:'client',GOOGLE_CLIENT_SECRET:'test-client-secret',CALENDAR_TOKEN_KEY:'11'.repeat(32),ADMIN_EMAIL:admin,MAIL_FROM:'roomly@example.com'};
   const pending=[],verifications=[];const handler=createHandler(async(credential,clientId,nonce)=>{verifications.push({clientId,nonce});return JSON.parse(credential);});
   const call=(path,options={})=>handler.fetch(new Request(origin+'/roomly/api/'+path,options),env,{waitUntil(p){pending.push(p);}});
@@ -21,11 +22,41 @@ function fixture(){
   async function login(email,sub){const challenge=await call('challenge'),data=await challenge.json(),nonceCookie=challenge.headers.getSetCookie()[0].split(';')[0];const r=await post('login',{nonce:data.nonce,credential:JSON.stringify({email,sub,name:'姓名',emailAuthoritative:true})},nonceCookie);assert.equal(r.status,200);await Promise.all(pending.splice(0));return r.headers.getSetCookie()[0].split(';')[0];}
   async function connect(sub){await env.DB.prepare("INSERT INTO calendar_connections(member_sub,refresh_cipher,version,status,updated_at) VALUES(?,?,?,'connected',0)").bind(sub,await sealToken(env,sub,'refresh-'+sub),'version-'+sub).run();}
   async function location(cookie){assert.equal((await post('calendar/location',{location:'主會議室'},cookie)).status,200);}
-  return {sqlite,env,call,post,get,login,connect,location,verifications};
+  return {sqlite,env,call,post,get,login,connect,location,verifications,operations};
 }
 async function mocked(handler,action){const original=globalThis.fetch;const calls=[];globalThis.fetch=async(url,options={})=>{calls.push({url:String(url),options});if(new URL(url).pathname.endsWith('/watch')){const body=JSON.parse(options.body);return json({kind:'api#channel',id:body.id,resourceId:'fixture-resource-'+body.id,expiration:Date.now()+7*86400000});}return handler(new URL(url),options);};try{return await action(calls);}finally{globalThis.fetch=original;}}
 const normalGoogle=(url,options)=>url.hostname==='oauth2.googleapis.com'?json({access_token:'access-'+new URLSearchParams(options.body).get('refresh_token')}):json({accessRole:'owner',items:[meeting]});
 async function team(){const f=fixture(),owner=await f.login(admin,'admin'),member=await f.login('teammate@gmail.com','member');await f.post('admin/review',{sub:'member',status:'approved'},owner);await f.location(owner);return {f,owner,member};}
+test('unchanged six-source five-week syncs skip every cross-week prune and grant flag write while committing genuine success',async()=>{
+  const f=fixture(),owner=await f.login(admin,'admin');await f.connect('admin');await f.location(owner);
+  for(let i=1;i<6;i++){await f.login('source'+i+'@example.com','source'+i);await f.post('admin/review',{sub:'source'+i,status:'approved'},owner);await f.connect('source'+i);}
+  const weeks=Array.from({length:5},(_,i)=>new Date(Date.parse(week+'T00:00:00Z')+i*7*86400000).toISOString().slice(0,10));
+  const google=(url)=>url.hostname==='oauth2.googleapis.com'?json({access_token:'access',scope:fullScopes}):url.pathname.endsWith('/calendarList')?json({items:[{id:'shared@example.com',accessRole:'reader'}]}):json({accessRole:'owner',items:[meeting]});
+  const realNow=Date.now;
+  try{
+    await mocked(google,async()=>{for(const day of weeks)await syncCalendars(f.env,day);});
+    const before=f.sqlite.prepare('SELECT member_sub,week_start,data,synced_at FROM calendar_snapshots ORDER BY member_sub,week_start').all();assert.equal(before.length,30);
+    const start=f.operations.length;Date.now=()=>realNow()+601000;
+    await mocked(google,async()=>{for(const day of weeks)await syncCalendars(f.env,day);});
+    const writes=f.operations.slice(start).filter(operation=>operation.kind==='run');
+    const prunes=writes.filter(operation=>operation.sql.startsWith('UPDATE calendar_snapshots SET data=COALESCE'));
+    const flags=writes.filter(operation=>operation.sql.startsWith('UPDATE calendar_connections SET shared_calendars='));
+    assert.equal(prunes.length,30);assert.equal(flags.length,30);assert.equal(prunes.reduce((n,operation)=>n+operation.changes,0),0);assert.equal(flags.reduce((n,operation)=>n+operation.changes,0),0);
+    assert.equal(writes.filter(operation=>operation.sql.startsWith('UPDATE calendar_snapshots SET data=?,synced_at=')).reduce((n,operation)=>n+operation.changes,0),30);
+    const after=f.sqlite.prepare('SELECT member_sub,week_start,data,synced_at FROM calendar_snapshots ORDER BY member_sub,week_start').all();
+    after.forEach((row,i)=>{assert.equal(row.data,before[i].data);assert.ok(row.synced_at>before[i].synced_at);});
+  }finally{Date.now=realNow;}
+});
+
+test('minute scheduling does not run broad cleanup and ten-minute maintenance removes expired OAuth state',async()=>{
+  const f=fixture();await f.login(admin,'admin');
+  f.sqlite.exec("INSERT INTO calendar_oauth_states(hash,member_sub,session_hash,nonce,expires_at) VALUES('expired','admin','session','nonce',1)");
+  let start=f.operations.length;await calendarMaintenance(f.env,false);
+  assert.equal(f.operations.slice(start).filter(operation=>operation.sql.startsWith('DELETE ')).length,0);assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_oauth_states').get().n,1);
+  start=f.operations.length;await calendarMaintenance(f.env,true);
+  assert.ok(f.operations.slice(start).some(operation=>operation.sql.startsWith('DELETE FROM calendar_watch_channels')));assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_oauth_states').get().n,0);
+});
+
 test('shared feed is gated; only logged-in approved accounts become sources, not preapproved Emails',async()=>{
   const f=fixture();for(const path of ['calendar-sources','calendar/feed'])assert.equal((await f.get(path)).status,401);
   const pending=await f.login('waiting@gmail.com','pending');assert.equal((await f.get('calendar/feed',pending)).status,403);
@@ -356,7 +387,7 @@ test('fast event rejection waits for its delayed siblings before starting the ne
 });
 
 test('room matching ignores formatting spaces and full-width parentheses in office resource names',()=>{
-  const name='示範辦公室(範例大樓B棟)-3-範例會議室 (15)',location='示範辦公室 （範例大樓 B 棟）-3-範例會議室 （15）';
+  const name='中和辦公室(元隆捷運雙星B棟)-3-洸研會議室 (15)',location='中和辦公室 （元隆捷運雙星 B 棟）-3-洸研會議室 （15）';
   assert.ok(minimizeEvent({...meeting,location},name));assert.equal(Core.googleRoomMatch({location},{name}),true);
   assert.equal(minimizeEvent({...meeting,location:location.replace('15','16')},name),null);
 });

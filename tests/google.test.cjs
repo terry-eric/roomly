@@ -11,6 +11,12 @@ function harness(request,allowed=true,selectedDay='2026-09-28',skipWeekends=fals
   context.RoomApp.days=()=>core.boardDays(selectedDay,skipWeekends,skipHolidays);
   return {el,states,calls,views,locations,intervals,intervalTimes,notifications,historyUpdates,context,emit:type=>listeners.get(type)?.(),emitDocument:type=>documentListeners.get(type)?.(),sync:()=>context.GoogleSync.sync()};
 }
+test('minute cached reads avoid redundant identity checks and server denial clears meetings',async()=>{
+ let checks=0,denied=false;const h=harness(()=>{if(denied){const error=Error('資格已移除');error.status=403;throw error;}return base();});h.context.RoomlyAccess.ensureAllowed=async()=>{checks++;return true;};
+ await h.sync();assert.equal(checks,1);const minute=h.intervals[h.intervalTimes.indexOf(60000)];minute();await settle();assert.equal(checks,1);assert.equal(h.calls.at(-1).path,'calendar/feed?day=2026-09-28&cached=1');
+ denied=true;minute();await settle();assert.equal(checks,1);assert.equal(h.states.at(-1).events,undefined);assert.equal(h.el('#shared-calendar-list').innerHTML,'');
+});
+
 test('logged-in shared board loads all authorized users without browser Calendar tokens and dedupes copies',async()=>{
  const h=harness(()=>base());await h.sync();assert.equal(h.calls[0].path,'calendar/feed?day=2026-09-28');assert.equal(h.states.at(-1).events.length,1);assert.equal(h.states.at(-1).events[0].sources.length,2);assert.equal(h.states.at(-1).availabilityComplete,false);assert.match(h.el('#shared-summary').textContent,/2 位/);assert.match(h.el('#shared-calendar-list').innerHTML,/other@gmail.com/);assert.ok(!h.calls.some(c=>c.path.includes('googleapis')));
 });

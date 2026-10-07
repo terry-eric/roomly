@@ -1,9 +1,9 @@
 const {test}=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
 function harness(user){
- const elements=new Map(),intervals=[],events=[];
- const el=selector=>{if(!elements.has(selector))elements.set(selector,{hidden:true,textContent:'',addEventListener(){}});return elements.get(selector);};
- const context={document:{body:{dataset:{page:'board'}},hidden:false,querySelector:el},fetch:async()=>({ok:true,json:async()=>({...user})}),AbortSignal,location:{replace(){}},setInterval:fn=>intervals.push(fn),CustomEvent:class{constructor(type,options){this.type=type;this.detail=options?.detail;}},dispatchEvent:event=>{events.push(event);return true;}};context.window=context;vm.createContext(context);vm.runInContext(fs.readFileSync(require.resolve('../access.js'),'utf8'),context);
- return {el,intervals,events,context,access:context.RoomlyAccess};
+ const elements=new Map(),intervals=[],events=[],navigations=[],alerts=[];
+ const el=selector=>{if(!elements.has(selector)){const listeners=new Map();elements.set(selector,{hidden:true,textContent:'',addEventListener(name,fn){listeners.set(name,fn);},dispatch(name){return listeners.get(name)?.();}});}return elements.get(selector);};
+ const context={document:{body:{dataset:{page:'board'}},hidden:false,querySelector:el},fetch:async()=>({ok:true,json:async()=>({...user})}),AbortSignal,location:{replace:url=>navigations.push(url)},alert:message=>alerts.push(message),setInterval:fn=>intervals.push(fn),CustomEvent:class{constructor(type,options){this.type=type;this.detail=options?.detail;}},dispatchEvent:event=>{events.push(event);return true;}};context.window=context;vm.createContext(context);vm.runInContext(fs.readFileSync(require.resolve('../access.js'),'utf8'),context);
+ return {el,intervals,events,navigations,alerts,context,access:context.RoomlyAccess};
 }
 test('administrator always sees whitelist management in navigation and settings, with pending count and account identity',async()=>{
  const user={email:'roomly-admin@gmail.com',status:'approved',isAdmin:true,pending:2},h=harness(user);await h.access.ready;
@@ -175,10 +175,35 @@ test('missing or null calendar revisions and unapproved sessions cannot announce
  Object.assign(user,{status:'pending',calendarRevision:'pending'});await h.access.ensureAllowed();Object.assign(user,{status:'rejected',calendarRevision:'rejected'});await h.access.ensureAllowed();assert.equal(h.events.length,0);
 });
 
-test('an older access response cannot roll back the calendar revision or emit a stale notification',async()=>{
+test('concurrent polling and explicit checks share one in-flight response and the next check remains fresh',async()=>{
  const user={email:'member@example.com',status:'approved',isAdmin:false,calendarRevision:'first'},h=harness(user);await h.access.ready;
- let release;const older=new Promise(resolve=>release=resolve);let requests=0;
- h.context.fetch=async()=>({ok:true,json:async()=>++requests===1?older:{...user,calendarRevision:'latest'}});
- const pending=h.access.ensureAllowed();await settle();await h.access.ensureAllowed();assert.equal(h.events.length,1);assert.equal(h.events[0].detail.calendarRevision,'latest');
- release({...user,calendarRevision:'obsolete'});await pending;assert.equal(h.events.length,1);assert.equal(h.access.user().calendarRevision,'latest');
+ let release;const reply=new Promise(resolve=>release=resolve);let requests=0;
+ h.context.fetch=async()=>{requests++;return {ok:true,json:async()=>requests===1?reply:{...user,calendarRevision:'latest'}};};
+ const pending=h.access.ensureAllowed(),others=Array.from({length:10},()=>h.access.ensureAllowed());h.intervals[0]();await settle();assert.equal(requests,1);assert.ok(others.every(promise=>promise===pending),'callers share the same promise instead of overlapping D1 requests');
+ release({...user,calendarRevision:'second'});assert.ok((await Promise.all([pending,...others])).every(Boolean));assert.equal(h.events.length,1);assert.equal(h.events[0].detail.calendarRevision,'second');
+ await h.access.ensureAllowed();assert.equal(requests,2,'completed authorization responses are not retained as a TTL cache');assert.equal(h.events.length,2);assert.equal(h.access.user().calendarRevision,'latest');
+});
+
+test('a rejected or failed shared access check releases the in-flight slot and retry observes current membership',async()=>{
+ for(const mode of ['unauthorized','network']){
+  const user={email:'member@example.com',status:'approved',isAdmin:false,sourcesRevision:'first'},h=harness(user);await h.access.ready;let release,requests=0;const waiting=new Promise(resolve=>release=resolve);
+  h.context.fetch=async()=>{requests++;await waiting;if(mode==='network')throw Error('network');return {ok:false,status:401,json:async()=>({error:'登入已失效'})};};
+  const first=h.access.ensureAllowed(),second=h.access.ensureAllowed();assert.equal(first,second);release();assert.equal(await first,false);assert.equal(await second,false);assert.equal(requests,1);if(mode==='unauthorized')assert.equal(h.access.user(),null);
+  h.context.fetch=async()=>{requests++;return {ok:true,json:async()=>({...user,status:'rejected',sourcesRevision:null})};};assert.equal(await h.access.ensureAllowed(),false);assert.equal(requests,2);assert.equal(h.access.user().status,'rejected');assert.equal(h.events.length,0);
+ }
+});
+
+test('an access response started before logout cannot restore identity or emit changes afterward',async()=>{
+ const user={email:'member@example.com',status:'approved',isAdmin:false,sourcesRevision:'first',calendarRevision:'first'},h=harness(user);await h.access.ready;let release,reads=0,logouts=0;const waiting=new Promise(resolve=>release=resolve);
+ h.context.fetch=async url=>{if(url.endsWith('/logout')){logouts++;return {ok:true,json:async()=>({ok:true})};}reads++;return {ok:true,json:()=>waiting};};
+ const older=h.access.ensureAllowed();await settle();await h.el('#sign-out').dispatch('click');assert.equal(logouts,1);assert.equal(h.access.user(),null);assert.equal(await h.access.ensureAllowed(),false,'no further checks run during logout navigation');assert.equal(reads,1);
+ release({...user,sourcesRevision:'obsolete',calendarRevision:'obsolete'});assert.equal(await older,false);assert.equal(h.access.user(),null);assert.equal(h.events.length,0);assert.deepEqual(h.navigations,['/roomly/']);
+});
+
+test('a pre-logout response cannot clear the newer refresh after a failed logout',async()=>{
+ const user={email:'member@example.com',status:'approved',isAdmin:false,calendarRevision:'first'},h=harness(user);await h.access.ready;let releaseOld,releaseNew,reads=0;const old=new Promise(resolve=>releaseOld=resolve),next=new Promise(resolve=>releaseNew=resolve);
+ h.context.fetch=async url=>{if(url.endsWith('/logout'))throw Error('network');reads++;return {ok:true,json:()=>reads===1?old:next};};
+ const older=h.access.ensureAllowed();await settle();await h.el('#sign-out').dispatch('click');assert.equal(h.alerts.length,1);const current=h.access.ensureAllowed();await settle();assert.equal(reads,2);
+ releaseOld({...user,calendarRevision:'obsolete'});await older;assert.equal(h.events.length,0);assert.equal(h.access.ensureAllowed(),current,'the old cleanup cannot discard a newer flight');assert.equal(reads,2);
+ releaseNew({...user,calendarRevision:'latest'});assert.equal(await current,true);assert.equal(h.access.user().calendarRevision,'latest');assert.deepEqual(h.events.map(event=>event.detail.calendarRevision),['latest']);assert.deepEqual(h.navigations,[]);
 });

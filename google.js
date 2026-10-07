@@ -88,7 +88,9 @@
     $('#google-sync').disabled=$('#google-start').disabled=$('#refresh-sources').disabled=true;
     $('#google-start').textContent='同步中…';
     try{
-      if(!await access.ensureAllowed()){if(run===generation)A.setLive({message:'請確認登入與白名單資格。',availabilityComplete:false});return;}
+      // Minute cache reads already pass the server's fresh session/approval
+      // check. Keep the independent minute /me check for revocation and renewal.
+      if(!cached&&!await access.ensureAllowed()){if(run===generation)A.setLive({message:'請確認登入與白名單資格。',availabilityComplete:false});return;}
       const days=A.days?A.days():RoomCore.boardDays(A.day()),day=days[0],weeks=[...new Set(days.map(date=>RoomCore.weekDays(date)[0]))];
       const feeds=[];
       // One account's grant spans the visible weeks; finish its first sync before

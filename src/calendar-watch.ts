@@ -66,7 +66,7 @@ export async function pruneCalendarWatches(env:Env,connection:WatchConnection,ke
 
 // IDs are only used transiently to create watches. The persisted target keys
 // and Google's resource IDs contain no calendar names or routing URLs.
-export async function ensureCalendarWatches(env:Env,connection:WatchConnection,accessToken:string,calendarIds:string[],shared:boolean,signal:AbortSignal){
+export async function ensureCalendarWatches(env:Env,connection:WatchConnection,accessToken:string,calendarIds:string[],shared:boolean,signal:AbortSignal,alreadyPruned=false){
   try{
     // Setup is best-effort and must leave time for the actual meeting read.
     const setupSignal=AbortSignal.any([signal,AbortSignal.timeout(10000)]),source=sourceGuard();
@@ -74,10 +74,12 @@ export async function ensureCalendarWatches(env:Env,connection:WatchConnection,a
     for(const id of calendarIds){const key=id==='primary'?'':await hash(id);desired.set('events:'+key,{kind:'events',key,url:'https://www.googleapis.com/calendar/v3/calendars/'+encodeURIComponent(id)+'/events/watch'});}
     if(shared)desired.set('list:',{kind:'list',key:'',url:'https://www.googleapis.com/calendar/v3/users/me/calendarList/watch'});
     const keys=JSON.stringify([...desired.values()].filter(t=>t.kind==='events').map(t=>t.key));
-    await pruneCalendarWatches(env,connection,JSON.parse(keys),shared);
-    await env.DB.batch([
-      ...[...desired.values()].map(target=>env.DB.prepare(`INSERT INTO calendar_watch_targets(member_sub,connection_version,kind,calendar_key) SELECT ?,?,?,? WHERE ${source} ON CONFLICT(member_sub,connection_version,kind,calendar_key) DO NOTHING`).bind(connection.member_sub,connection.version,target.kind,target.key,...sourceValues(connection)))
-    ]);
+    if(!alreadyPruned)await pruneCalendarWatches(env,connection,JSON.parse(keys),shared);
+    // One statement checks current approval/version/source ownership once,
+    // then probes target primary keys. Reused targets retain retry and lease
+    // state; only missing opaque keys are inserted, without routing URLs.
+    const targets=JSON.stringify([...desired.values()].map(target=>[target.kind,target.key]));
+    await env.DB.prepare(`INSERT INTO calendar_watch_targets(member_sub,connection_version,kind,calendar_key) SELECT ?,?,json_extract(wanted.value,'$[0]'),json_extract(wanted.value,'$[1]') FROM json_each(?) wanted WHERE ${source} AND NOT EXISTS(SELECT 1 FROM calendar_watch_targets t WHERE t.member_sub=? AND t.connection_version=? AND t.kind=json_extract(wanted.value,'$[0]') AND t.calendar_key=json_extract(wanted.value,'$[1]')) ON CONFLICT(member_sub,connection_version,kind,calendar_key) DO NOTHING`).bind(connection.member_sub,connection.version,targets,...sourceValues(connection),connection.member_sub,connection.version).run();
     // Bound setup work per source. Remaining targets are durable, and the next
     // ten-minute full refresh has the transient calendar IDs needed to retry.
     const {results}=await env.DB.prepare(`SELECT t.kind,t.calendar_key,t.attempts FROM calendar_watch_targets t WHERE t.member_sub=? AND t.connection_version=? AND t.retry_at<=? AND t.lease_until<=? AND ${source} AND NOT EXISTS(SELECT 1 FROM calendar_watch_channels w WHERE w.member_sub=t.member_sub AND w.connection_version=t.connection_version AND w.kind=t.kind AND w.calendar_key=t.calendar_key AND w.state='active' AND w.expires_at>?) ORDER BY CASE WHEN t.kind='list' THEN 0 WHEN t.calendar_key='' THEN 1 ELSE 2 END,t.attempts,t.calendar_key LIMIT 6`).bind(connection.member_sub,connection.version,now(),now(),...sourceValues(connection),now()+renewAhead).all<WatchTarget>();

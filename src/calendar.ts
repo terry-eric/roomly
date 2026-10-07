@@ -1,8 +1,9 @@
 import {cleanupCalendarWatches,ensureCalendarWatches,pruneCalendarWatches} from './calendar-watch.ts';
 import {reserveCalendarEnqueue} from './calendar-queue.ts';
+import {cachedCalendarFeed,type FeedRoom,type FeedRow} from './calendar-feed-cache.ts';
 type CalendarMember={sub:string;email:string;status:string;role:string};
 type IdentityVerifier=(credential:string,clientId:string,nonce:string)=>Promise<{sub:string}>;
-type Room={location:string;revision:number};
+type Room=FeedRoom;
 type Connection={member_sub:string;refresh_cipher:string;version:string;status:string;shared_calendars:number;change_revision:number};
 type Snapshot={data:string;synced_at:number;retry_at:number;error_code:string|null};
 type EventRecord=Record<string,any>;
@@ -74,7 +75,7 @@ export function taipeiWeek(value:string|number=Date.now()){
   if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(Date.parse(day+'T00:00:00Z'))||new Date(day+'T00:00:00Z').toISOString().slice(0,10)!==day)throw new CalendarError(400,'日期格式不正確。');
   const d=new Date(day+'T00:00:00Z');d.setUTCDate(d.getUTCDate()-((d.getUTCDay()+6)%7));return d.toISOString().slice(0,10);
 }
-async function settings(env:Env){return (await env.DB.prepare('SELECT location,revision FROM room_settings WHERE id=1').first<Room>())!;}
+async function settings(env:Env){return (await env.DB.prepare('SELECT location,revision,sources_revision,feed_revision FROM room_settings WHERE id=1').first<Room>())!;}
 // A rejected access token does not establish that the stored refresh grant was revoked.
 async function googleJSON(url:string,options:RequestInit={},tokenExchange=false){const response=await fetch(url,{...options,signal:options.signal?AbortSignal.any([options.signal,AbortSignal.timeout(20000)]):AbortSignal.timeout(20000)});let data:EventRecord;try{data=await response.json();}catch{throw new CalendarError(502,'Google 回應暫時無法讀取。');}if(!response.ok){if(tokenExchange&&data?.error==='invalid_grant')throw new CalendarError(401,'REAUTHORIZE');throw new CalendarError(502,'Google 日曆暫時無法同步，請稍後重試。',response.status);}return data;}
 const tokenRequest=(env:Env,values:Record<string,string>,signal?:AbortSignal)=>googleJSON('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,client_secret:env.GOOGLE_CLIENT_SECRET!,...values}),signal},true);
@@ -101,7 +102,8 @@ async function readableCalendars(accessToken:string,signal:AbortSignal){
 async function pruneCalendarSnapshots(env:Env,connection:Connection,week:string,lease:string,keys:string[],exclude=false){
   // Permission changes apply to every cached week, even when another Google
   // request fails. Keep primary and still-authorized calendar meetings.
-  await env.DB.prepare(`UPDATE calendar_snapshots SET data=COALESCE((SELECT json_group_array(json(value)) FROM json_each(calendar_snapshots.data) WHERE json_extract(value,'$.calendarKey') IS NULL OR json_extract(value,'$.calendarKey') ${exclude?'NOT IN':'IN'} (SELECT value FROM json_each(?))), '[]') WHERE member_sub=? AND connection_version=? AND EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') AND EXISTS(SELECT 1 FROM calendar_connections WHERE member_sub=? AND version=? AND status='connected') AND EXISTS(SELECT 1 FROM calendar_snapshots owner WHERE owner.member_sub=? AND owner.week_start=? AND owner.lease_id=? AND owner.lease_until>?)`).bind(JSON.stringify(keys),connection.member_sub,connection.version,connection.member_sub,connection.member_sub,connection.version,connection.member_sub,week,lease,second()).run();
+  const removed=`json_extract(value,'$.calendarKey') IS NOT NULL AND json_extract(value,'$.calendarKey') ${exclude?'IN':'NOT IN'} (SELECT value FROM json_each(?))`;
+  await env.DB.prepare(`UPDATE calendar_snapshots SET data=COALESCE((SELECT json_group_array(json(value)) FROM json_each(calendar_snapshots.data) WHERE NOT (${removed})), '[]') WHERE member_sub=? AND connection_version=? AND EXISTS(SELECT 1 FROM json_each(calendar_snapshots.data) WHERE ${removed}) AND EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') AND EXISTS(SELECT 1 FROM calendar_connections WHERE member_sub=? AND version=? AND status='connected') AND EXISTS(SELECT 1 FROM calendar_snapshots owner WHERE owner.member_sub=? AND owner.week_start=? AND owner.lease_id=? AND owner.lease_until>?)`).bind(JSON.stringify(keys),connection.member_sub,connection.version,JSON.stringify(keys),connection.member_sub,connection.member_sub,connection.version,connection.member_sub,week,lease,second()).run();
 }
 async function syncSource(env:Env,connection:Connection,week:string,room:Room,manual=false){
   if(!room.location||connection.status!=='connected')return;
@@ -121,13 +123,13 @@ async function syncSource(env:Env,connection:Connection,week:string,room:Room,ma
     if(typeof result.access_token!=='string')throw new CalendarError(502,'TOKEN_RESPONSE');
     if(typeof result.scope==='string'&&!canReadEvents(result.scope))throw new CalendarError(401,'REAUTHORIZE');
     const shared=typeof result.scope==='string'?canListCalendars(result.scope):!!connection.shared_calendars;
-    await env.DB.prepare("UPDATE calendar_connections SET shared_calendars=? WHERE member_sub=? AND version=? AND status='connected' AND EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') AND EXISTS(SELECT 1 FROM calendar_snapshots owner WHERE owner.member_sub=? AND owner.week_start=? AND owner.lease_id=? AND owner.lease_until>?)").bind(shared?1:0,connection.member_sub,connection.version,connection.member_sub,connection.member_sub,week,lease,second()).run();
+    await env.DB.prepare("UPDATE calendar_connections SET shared_calendars=? WHERE member_sub=? AND version=? AND status='connected' AND shared_calendars!=? AND EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') AND EXISTS(SELECT 1 FROM calendar_snapshots owner WHERE owner.member_sub=? AND owner.week_start=? AND owner.lease_id=? AND owner.lease_until>?)").bind(shared?1:0,connection.member_sub,connection.version,shared?1:0,connection.member_sub,connection.member_sub,week,lease,second()).run();
     if(!shared){await pruneCalendarSnapshots(env,connection,week,lease,[]);await pruneCalendarWatches(env,watchSource,[''],false);}
     const calendarIds=shared?await readableCalendars(result.access_token,deadline):['primary'];
     if(shared){const keys=await Promise.all(calendarIds.filter(id=>id!=='primary').map(digest));await pruneCalendarSnapshots(env,connection,week,lease,keys);await pruneCalendarWatches(env,watchSource,['',...keys],true);}
     // Establish the watch before reading events so ignored early initial-sync
     // notifications cannot leave a gap between the read and subscription.
-    await ensureCalendarWatches(env,watchSource,result.access_token,calendarIds,shared,deadline);
+    await ensureCalendarWatches(env,watchSource,result.access_token,calendarIds,shared,deadline,true);
     const items:EventRecord[]=[];let payloadSize=2,partial=false;
     const deniedKeys:string[]=[];
     const readCalendar=async(calendarId:string)=>{
@@ -263,17 +265,24 @@ export async function calendarAPI(path:string,request:Request,env:Env,member:Cal
     // while promptly removing revoked sources from already-open boards.
     const cachedOnly=!manual&&new URL(request.url).searchParams.get('cached')==='1';
     let syncQueued=false;
-    if(!cachedOnly){if(env.CALENDAR_SYNC_QUEUE)syncQueued=await enqueueCalendarSync(env,week,manual,true);else await syncCalendars(env,week,manual);}const room=await settings(env);
-    const {results}=await env.DB.prepare(`SELECT m.sub,m.email,c.status,c.version,c.shared_calendars,s.calendar_count,s.data,s.synced_at,s.error_code FROM members m LEFT JOIN calendar_connections c ON c.member_sub=m.sub LEFT JOIN calendar_snapshots s ON s.member_sub=m.sub AND s.week_start=? AND s.room_revision=? AND s.connection_version=c.version WHERE m.status='approved' ORDER BY m.email`).bind(week,room.revision).all<{sub:string;email:string;status:string|null;shared_calendars:number|null;calendar_count:number|null;data:string|null;synced_at:number|null;error_code:string|null}>();
-    const sources=results.map(row=>({email:row.email,state:!row.status?'unauthorized':row.status==='reauthorize'?'reauthorize':row.error_code?'error':!row.synced_at?'waiting':second()-row.synced_at>2*syncInterval?'stale':'ready',syncedAt:row.synced_at||null,sharedCalendars:!!row.shared_calendars,calendarCount:row.shared_calendars?(row.calendar_count||1):1,events:row.status==='connected'&&row.data?JSON.parse(row.data).filter((event:EventRecord)=>row.shared_calendars||!event.calendarKey):[]}));
-    return reply({week,location:room.location,configured:calendarReady(env),email:member.email,isAdmin:member.role==='admin'&&member.email===env.ADMIN_EMAIL,syncQueued,sources});
+    if(!cachedOnly){if(env.CALENDAR_SYNC_QUEUE)syncQueued=await enqueueCalendarSync(env,week,manual,true);else await syncCalendars(env,week,manual);}
+    const sessionHash=await digest(session(request));
+    const readRoom=async()=>{
+      const room=await env.DB.prepare("SELECT r.location,r.revision,r.sources_revision,r.feed_revision FROM room_settings r JOIN members m ON m.sub=? AND m.status='approved' JOIN sessions s ON s.member_sub=m.sub AND s.hash=? AND s.expires_at>? WHERE r.id=1").bind(member.sub,sessionHash,second()).first<Room>();
+      if(!room)throw new CalendarError(403,'登入或使用資格已變更，請重新確認。');return room;
+    };
+    const result=await cachedCalendarFeed(env,week,await settings(env),readRoom,async room=>{
+      const {results}=await env.DB.prepare(`SELECT m.email,c.status,c.shared_calendars,s.calendar_count,s.data,s.synced_at,s.error_code FROM members m LEFT JOIN calendar_connections c ON c.member_sub=m.sub LEFT JOIN calendar_snapshots s ON s.member_sub=m.sub AND s.week_start=? AND s.room_revision=? AND s.connection_version=c.version WHERE m.status='approved' ORDER BY m.email`).bind(week,room.revision).all<FeedRow>();return results;
+    });
+    const sources=result.rows.map(row=>({email:row.email,state:!row.status?'unauthorized':row.status==='reauthorize'?'reauthorize':row.error_code?'error':!row.synced_at?'waiting':second()-row.synced_at>2*syncInterval?'stale':'ready',syncedAt:row.synced_at||null,sharedCalendars:!!row.shared_calendars,calendarCount:row.shared_calendars?(row.calendar_count||1):1,events:row.status==='connected'&&row.data?JSON.parse(row.data).filter((event:EventRecord)=>row.shared_calendars||!event.calendarKey):[]}));
+    const response=reply({week,location:result.room.location,configured:calendarReady(env),email:member.email,isAdmin:member.role==='admin'&&member.email===env.ADMIN_EMAIL,syncQueued,sources});response.headers.set('X-Roomly-Cache',result.cache);return response;
   }
   throw new CalendarError(404,'找不到此功能。');
 }
 export async function calendarMaintenance(env:Env,fullSync=true){
-  await removeRevokedCalendars(env);
-  await cleanupCalendarWatches(env);
   if(fullSync){
+    await removeRevokedCalendars(env);
+    await cleanupCalendarWatches(env);
     const oldest=new Date(Date.now()-63*86400000).toISOString().slice(0,10),newest=new Date(Date.now()+63*86400000).toISOString().slice(0,10);
     await env.DB.batch([env.DB.prepare('DELETE FROM calendar_oauth_states WHERE expires_at<=?').bind(second()),env.DB.prepare("DELETE FROM calendar_snapshots WHERE week_start<? OR week_start>?").bind(oldest,newest),env.DB.prepare('DELETE FROM calendar_enqueue_gates WHERE week_start<? OR week_start>?').bind(oldest,newest)]);
   }

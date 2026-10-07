@@ -2,7 +2,7 @@
 (() => {
   const page=document.body.dataset.page;
   if(!['gate','board','admin'].includes(page))return;
-  const api='/roomly/api/';let info=null,loginBusy=false,loginStarted=false,loginPreparedAt=0,signInWidth=0,signInSizer=null,loginMode='',refreshGeneration=0;
+  const api='/roomly/api/';let info=null,loginBusy=false,loginStarted=false,loginPreparedAt=0,signInWidth=0,signInSizer=null,loginMode='',refreshGeneration=0,refreshFlight=null,loggingOut=false;
   const status=text=>{const el=document.querySelector('#access-status');if(el)el.textContent=text;};
   async function request(path,body){
     const timeout=path.startsWith('calendar/')?60000:15000,message='暫時無法連線，請稍後重試。';
@@ -24,7 +24,9 @@
     }finally{if(timer!==null)clearTimeout(timer);}
   }
   async function logout(){
-    try{await request('logout',{});if(window.google&&window.google.accounts&&window.google.accounts.id)window.google.accounts.id.disableAutoSelect();location.replace('/roomly/');}catch(error){status(error.message);if(page==='board')alert(error.message);}
+    if(loggingOut)return;
+    loggingOut=true;refreshGeneration++;refreshFlight=null;
+    try{await request('logout',{});info=null;if(window.google&&window.google.accounts&&window.google.accounts.id)window.google.accounts.id.disableAutoSelect();location.replace('/roomly/');}catch(error){loggingOut=false;status(error.message);if(page==='board')alert(error.message);}
   }
   const signOut=document.querySelector('#sign-out');if(signOut)signOut.addEventListener('click',logout);
   function showSignIn(mode){
@@ -85,12 +87,19 @@
     const account=document.querySelector('#gate-account');account.hidden=false;account.textContent=user.email;
     document.querySelector('#gate-title').textContent=user.status==='pending'?'等待管理員核准':'尚未取得使用資格';
     document.querySelector('#gate-description').textContent=user.status==='pending'?'加入申請已送出。管理員核准後，就可以進入會議室看板。':'管理員尚未核准這個帳號。你可以聯絡管理員，或登出後更換帳號。';
-    status(user.status==='pending'?(user.notification==='disabled'?'申請已保存，請聯絡管理員在白名單管理中核准。':user.notification==='sent'?'管理員的 Email 通知已送交寄信服務。':'申請已保存，管理員 Email 通知正在安排寄送。'):'目前無法開啟看板。');
+    status(user.status==='pending'?(user.notification==='sent'?'管理員的 Email 通知已送交寄信服務。':'申請已保存，管理員 Email 通知正在安排寄送。'):'目前無法開啟看板。');
   }
-  async function refresh(){
-    const run=++refreshGeneration;
+  function refresh(){
+    if(loggingOut)return Promise.resolve(false);
+    if(refreshFlight)return refreshFlight;
+    const pending=readAccess(++refreshGeneration);refreshFlight=pending;
+    // Share only an in-flight check, never a cached authorization decision.
+    const complete=()=>{if(refreshFlight===pending)refreshFlight=null;};
+    pending.then(complete,complete);return pending;
+  }
+  async function readAccess(run){
     try{
-      const user=await request('me');if(run!==refreshGeneration)return !!info&&info.status==='approved';
+      const user=await request('me');if(run!==refreshGeneration)return !loggingOut&&!!info&&info.status==='approved';
       const previous=info;info=user;
       if(info.status!=='approved'){
         if(page!=='gate'){location.replace('/roomly/');return false;}displayGate(info);return false;
@@ -106,8 +115,8 @@
       }
       return true;
     }catch(error){
-      if(run!==refreshGeneration)return !!info&&info.status==='approved';
-      if(error.status===401){if(page==='gate'){info=null;readySignIn();return false;}location.replace('/roomly/');return false;}
+      if(run!==refreshGeneration)return !loggingOut&&!!info&&info.status==='approved';
+      if(error.status===401){info=null;if(page==='gate'){readySignIn();return false;}location.replace('/roomly/');return false;}
       status(error.message);return false;
     }
   }

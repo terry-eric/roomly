@@ -4,14 +4,14 @@ import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
 import {createHandler,hash} from '../src/worker.ts';
 import {CalendarError,sealToken,taipeiWeek,syncCalendars,calendarMaintenance,enqueueCalendarSync} from '../src/calendar.ts';
-import {calendarWebhook,ensureCalendarWatches} from '../src/calendar-watch.ts';
+import {calendarWebhook,ensureCalendarWatches,pruneCalendarWatches} from '../src/calendar-watch.ts';
 const origin='https://roomly.example.com',sub='member',version='version-1',week=taipeiWeek(),nextWeek=new Date(Date.parse(week+'T00:00:00Z')+7*86400000).toISOString().slice(0,10);
 const scopes='https://www.googleapis.com/auth/calendar.events.readonly https://www.googleapis.com/auth/calendar.calendarlist.readonly';
 const now=()=>Math.floor(Date.now()/1000),json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
 const meeting=day=>({id:'event-'+day,iCalUID:'invite-'+day,summary:'Original reservation',location:'Meeting room',start:{dateTime:day+'T10:00:00+08:00'},end:{dateTime:day+'T11:00:00+08:00'}});
 
 async function fixture(){
- const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision','0007_calendar_enqueue_gates'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+ const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision','0007_calendar_enqueue_gates','0008_feed_cache'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
  const DB={prepare(sql){const statement=sqlite.prepare(sql);let values=[];return {bind(...args){values=args;return this;},async first(){return statement.get(...values)||null;},async all(){return {results:statement.all(...values)};},run(){return {meta:{changes:statement.run(...values).changes}};}};},async batch(statements){sqlite.exec('BEGIN');try{const results=statements.map(statement=>statement.run());sqlite.exec('COMMIT');return results;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
  const env={DB,EMAIL:{async send(){}},ASSETS:{async fetch(){return new Response('asset');}},APP_ORIGIN:origin,GOOGLE_CLIENT_ID:'fixture-client',GOOGLE_CLIENT_SECRET:'fixture-client-secret',CALENDAR_TOKEN_KEY:'11'.repeat(32),ADMIN_EMAIL:'admin@example.com',MAIL_FROM:'roomly@example.com'};
  sqlite.exec("INSERT INTO members(sub,email,name,role,status,requested_at) VALUES('member','member@example.com','Member','member','approved',1); UPDATE room_settings SET location='Meeting room',revision=2 WHERE id=1;");
@@ -77,6 +77,32 @@ test('watch registration tolerates an early sync, keeps only hashed calendar and
   const stored=JSON.stringify({channels,targets:f.sqlite.prepare('SELECT * FROM calendar_watch_targets').all()});assert.ok(!stored.includes(calendar));for(const registration of registered)assert.ok(!stored.includes(registration.token));assert.equal(f.connection().change_revision,1,'activating the list channel schedules one catch-up for changes before activation');
   const tokenCalls=calls.filter(call=>new URL(call.url).hostname==='oauth2.googleapis.com');assert.equal(tokenCalls.length,0,'watch uses the existing access token without adding consent');
  });
+});
+
+test('batched watch targets preserve reused state and immediately reject removed channels through either pruning entry point',async()=>{
+ for(const alreadyPruned of [false,true]){
+  const f=await fixture(),keep='kept-calendar@example.test',removed='removed-calendar@example.test',added='new-calendar@example.test',keptKey=await hash(keep),removedKey=await hash(removed),addedKey=await hash(added);
+  await mocked(google(),async calls=>{
+   await ensureCalendarWatches(f.env,watchOwner(f),'fixture-access',['primary',keep,removed],true,AbortSignal.timeout(10000));
+   const removedRequest=calls.find(call=>new URL(call.url).pathname.includes(encodeURIComponent(removed))),removedBody=JSON.parse(removedRequest.options.body),beforeChannels=f.sqlite.prepare('SELECT * FROM calendar_watch_channels WHERE calendar_key!=? ORDER BY channel_id').all(removedKey);
+   f.sqlite.prepare("UPDATE calendar_watch_targets SET attempts=3,retry_at=?,error_code='WATCH_UNSUPPORTED' WHERE calendar_key=?").run(now()+86400,keptKey);const keptTarget=f.sqlite.prepare('SELECT * FROM calendar_watch_targets WHERE calendar_key=?').get(keptKey),owner=watchOwner(f),beforeRevision=f.connection().change_revision;
+   if(alreadyPruned){await pruneCalendarWatches(f.env,owner,['',keptKey,addedKey],true);await calendarWebhook(notification({id:removedBody.id,token:removedBody.token,resource:'opaque-'+removedBody.id}),f.env);assert.equal(f.connection().change_revision,beforeRevision,'caller pruning rejects a removed resource before any new watch setup');}
+   const prepare=f.env.DB.prepare,statements=[];f.env.DB.prepare=sql=>{statements.push(sql);return prepare(sql);};const count=calls.length;
+   await ensureCalendarWatches(f.env,owner,'fixture-access',['primary',keep,added],true,AbortSignal.timeout(10000),alreadyPruned);f.env.DB.prepare=prepare;
+   assert.equal(statements.filter(sql=>sql.startsWith('INSERT INTO calendar_watch_targets')).length,1,'one source ownership check admits all missing targets in one statement');assert.equal(statements.filter(sql=>sql.startsWith('DELETE FROM calendar_watch_')).length,alreadyPruned?1:3,'only replacement-channel cleanup remains when the caller already pruned');
+   assert.equal(calls.length,count+1,'only a newly subscribed calendar needs a new watch');assert.ok(new URL(calls.at(-1).url).pathname.includes(encodeURIComponent(added)));assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_watch_targets WHERE calendar_key=?').get(keptKey),keptTarget,'existing retry/backoff state is never reset by target discovery');
+   assert.deepEqual(f.sqlite.prepare('SELECT * FROM calendar_watch_channels WHERE calendar_key!=? ORDER BY channel_id').all(addedKey),beforeChannels,'unexpired primary, list and kept-calendar channels retain their exact IDs');assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_watch_targets').get().n,4);assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_watch_targets WHERE calendar_key=?').get(removedKey).n,0);
+   await calendarWebhook(notification({id:removedBody.id,token:removedBody.token,resource:'opaque-'+removedBody.id}),f.env);assert.equal(f.connection().change_revision,beforeRevision,'both pruning entry points immediately stop accepting removed-calendar notifications');
+  });
+ }
+});
+
+test('batch target insertion still requires current approval, connection version and source lease even after caller pruning',async()=>{
+ for(const invalid of ['rejected','old-version','expired-lease']){
+  const f=await fixture(),owner=watchOwner(f);
+  if(invalid==='rejected')f.sqlite.exec("UPDATE members SET status='rejected'");else if(invalid==='old-version')f.sqlite.exec("UPDATE calendar_connections SET version='replacement-version'");else f.sqlite.exec('UPDATE calendar_snapshots SET lease_until=0');
+  await mocked(()=>{throw Error('unowned source cannot call Google');},async calls=>{await ensureCalendarWatches(f.env,owner,'fixture-access',['primary','shared-a@example.test','shared-b@example.test'],true,AbortSignal.timeout(10000),true);assert.equal(calls.length,0,invalid);assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_watch_targets').get().n,0,invalid);assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_watch_channels').get().n,0,invalid);});
+ }
 });
 
 test('changed calendars refresh one cached week per tick and leave other fresh-cache generations pending',async()=>{
