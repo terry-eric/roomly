@@ -1,10 +1,10 @@
-export type FeedRoom={location:string;revision:number;sources_revision:number;feed_revision:number};
+export type FeedRoom={location:string;revision:number;sources_revision:number;feed_revision:number;sync_interval?:number};
 export type FeedRow={email:string;status:string|null;shared_calendars:number|null;calendar_count:number|null;data:string|null;synced_at:number|null;error_code:string|null};
 type StoredFeed={key:string;expiresAt:number;rows:FeedRow[]};
 const ttl=60,namespace='roomly-feed-v1';
 const fills=new WeakMap<object,Map<string,Promise<FeedRow[]>>>();
 const second=()=>Math.floor(Date.now()/1000);
-const sameRoom=(a:FeedRoom,b:FeedRoom)=>a.location===b.location&&a.revision===b.revision&&a.sources_revision===b.sources_revision&&a.feed_revision===b.feed_revision;
+const sameRoom=(a:FeedRoom,b:FeedRoom)=>a.location===b.location&&a.revision===b.revision&&a.sources_revision===b.sources_revision&&a.feed_revision===b.feed_revision&&a.sync_interval===b.sync_interval;
 const nullableNumber=(value:unknown)=>value===null||Number.isSafeInteger(value)&&Number(value)>=0;
 function validData(value:unknown){if(value===null)return true;if(typeof value!=='string'||value.length>1500000)return false;try{return Array.isArray(JSON.parse(value));}catch{return false;}}
 function validRows(rows:unknown):rows is FeedRow[]{
@@ -14,7 +14,7 @@ function validRows(rows:unknown):rows is FeedRow[]{
     &&validData(row.data)&&(row.error_code===null||typeof row.error_code==='string'&&row.error_code.length<=64));
 }
 async function keyFor(env:Env,week:string,room:FeedRoom){
-  const identity=JSON.stringify([namespace,env.APP_ORIGIN,week,room.location,room.revision,room.sources_revision,room.feed_revision]);
+  const identity=JSON.stringify([namespace,env.APP_ORIGIN,week,room.location,room.revision,room.sources_revision,room.feed_revision,room.sync_interval]);
   const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(identity))),byte=>byte.toString(16).padStart(2,'0')).join('');
   // A named Cache API namespace is never an ordinary public HTTP response.
   // Keep even its synthetic keys within the authenticated Worker API route.

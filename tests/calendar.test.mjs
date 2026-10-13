@@ -11,7 +11,7 @@ const eventScope='https://www.googleapis.com/auth/calendar.events.readonly',list
 const meeting={id:'e1',iCalUID:'shared-invitation',summary:'共同會議',location:'台北 主會議室',start:{dateTime:week+'T10:00:00+08:00'},end:{dateTime:week+'T11:00:00+08:00'},attendees:[{email:'teammate@gmail.com',displayName:'成員',responseStatus:'accepted'}],description:'NEVER_STORE_PRIVATE_NOTES',attachments:[{fileUrl:'private-url'}],hangoutLink:'https://meet.google.com/abc-defg-hij'};
 const json=(data,status=200)=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}});
 function fixture(){
-  const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision','0007_calendar_enqueue_gates','0008_feed_cache'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
+  const sqlite=new DatabaseSync(':memory:');for(const name of ['0001_access','0002_email_allowlist','0003_shared_calendar','0004_shared_calendar_list','0005_calendar_watch','0006_calendar_revision','0007_calendar_enqueue_gates','0008_feed_cache','0009_sync_interval'])sqlite.exec(readFileSync(new URL('../migrations/'+name+'.sql',import.meta.url),'utf8'));
   const operations=[];
   const DB={prepare(sql){const s=sqlite.prepare(sql);let values=[];return {bind(...v){values=v;return this;},async first(){operations.push({kind:'first',sql});return s.get(...values)||null;},async all(){operations.push({kind:'all',sql});return {results:s.all(...values)};},run(){const changes=s.run(...values).changes;operations.push({kind:'run',sql,changes});return {meta:{changes}};}};},async batch(statements){sqlite.exec('BEGIN');try{const values=statements.map(statement=>statement.run());sqlite.exec('COMMIT');return values;}catch(error){sqlite.exec('ROLLBACK');throw error;}}};
   const env={DB,EMAIL:{async send(){}},ASSETS:{async fetch(){return new Response('asset');}},APP_ORIGIN:origin,GOOGLE_CLIENT_ID:'client',GOOGLE_CLIENT_SECRET:'test-client-secret',CALENDAR_TOKEN_KEY:'11'.repeat(32),ADMIN_EMAIL:admin,MAIL_FROM:'roomly@example.com'};
@@ -55,6 +55,80 @@ test('minute scheduling does not run broad cleanup and ten-minute maintenance re
   assert.equal(f.operations.slice(start).filter(operation=>operation.sql.startsWith('DELETE ')).length,0);assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_oauth_states').get().n,1);
   start=f.operations.length;await calendarMaintenance(f.env,true);
   assert.ok(f.operations.slice(start).some(operation=>operation.sql.startsWith('DELETE FROM calendar_watch_channels')));assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM calendar_oauth_states').get().n,0);
+});
+
+test('global fallback setting persists and requires an approved administrator and the allowed origin',async()=>{
+  const {f,owner,member}=await team(),pending=await f.login('pending@gmail.com','pending');
+  assert.equal((await f.get('calendar/settings')).status,401);assert.equal((await f.get('calendar/settings',pending)).status,403);
+  assert.equal((await (await f.get('calendar/settings',member)).json()).syncIntervalSeconds,600);
+  for(const value of [0,599,601,1200,3601,'1800',null,900.5])assert.equal((await f.post('calendar/settings',{syncIntervalSeconds:value},owner)).status,400);
+  assert.equal((await f.post('calendar/settings',{syncIntervalSeconds:1800},member)).status,403);
+  assert.equal((await f.post('calendar/settings',{syncIntervalSeconds:1800},owner,{Origin:'https://other.example'})).status,403);
+  const source=await f.login('forged@gmail.com','forged');f.sqlite.exec("UPDATE members SET status='approved',role='admin' WHERE sub='forged'");assert.equal((await f.post('calendar/settings',{syncIntervalSeconds:1800},source)).status,403);
+  for(const value of [600,900,1800,3600]){
+    const response=await f.post('calendar/settings',{syncIntervalSeconds:value},owner);assert.equal(response.status,200);assert.equal((await response.json()).syncIntervalSeconds,value);
+    assert.equal((await (await f.get('calendar/settings',member)).json()).syncIntervalSeconds,value);
+    assert.equal((await (await f.get('me',member)).json()).syncIntervalSeconds,value);
+    assert.equal((await (await f.get('calendar/feed?cached=1',member)).json()).syncIntervalSeconds,value);
+  }
+  const before=f.sqlite.prepare('SELECT feed_revision FROM room_settings').get();await f.post('calendar/settings',{syncIntervalSeconds:3600},owner);assert.deepEqual(f.sqlite.prepare('SELECT feed_revision FROM room_settings').get(),before,'saving the same setting has no revision write');
+  assert.throws(()=>f.sqlite.exec('UPDATE room_settings SET sync_interval=60'),/CHECK/);
+});
+
+test('configured fallback changes actual success and failure retries without fabricating success or bypassing manual cooldown',async()=>{
+  const f=fixture(),owner=await f.login(admin,'admin');await f.location(owner);await f.connect('admin');
+  const realNow=Date.now;let clock=realNow(),failure=false;Date.now=()=>clock;
+  const google=(url,options)=>failure&&url.hostname==='oauth2.googleapis.com'?json({error:'temporary'},503):normalGoogle(url,options);
+  try{await mocked(google,async calls=>{
+    await f.post('calendar/settings',{syncIntervalSeconds:1800},owner);await syncCalendars(f.env,week);
+    const read=()=>f.sqlite.prepare('SELECT synced_at,retry_at,error_code FROM calendar_snapshots').get();let snapshot=read();assert.equal(snapshot.retry_at-snapshot.synced_at,1800);
+    const count=calls.length;await f.post('calendar/settings',{syncIntervalSeconds:3600},owner);assert.equal(read().synced_at,snapshot.synced_at);assert.equal(read().retry_at-snapshot.synced_at,3600);
+    clock+=29000;await syncCalendars(f.env,week,true);assert.equal(calls.length,count,'raising interval preserves the 30-second cooldown');
+    await f.post('calendar/settings',{syncIntervalSeconds:600},owner);await syncCalendars(f.env,week,true);assert.equal(calls.length,count,'lowering interval preserves the cooldown');
+    clock+=1000;await syncCalendars(f.env,week,true);assert.ok(calls.length>count);snapshot=read();assert.equal(snapshot.retry_at-snapshot.synced_at,600);
+    clock+=31000;failure=true;await syncCalendars(f.env,week,true);const failed=read();assert.equal(failed.error_code,'SYNC_FAILED');assert.equal(failed.synced_at,snapshot.synced_at);assert.equal(failed.retry_at,Math.floor(clock/1000)+600);
+    await f.post('calendar/settings',{syncIntervalSeconds:900},owner);assert.equal(read().retry_at,Math.floor(clock/1000)+900);const failedCount=calls.length;clock+=29000;await syncCalendars(f.env,week,true);assert.equal(calls.length,failedCount,'a failed attempt also has a real cooldown');
+    clock+=1000;failure=false;await syncCalendars(f.env,week,true);assert.ok(calls.length>failedCount);assert.equal(read().retry_at-read().synced_at,900);
+  });}finally{Date.now=realNow;}
+});
+
+test('a warm clean room skips the full week scan, but notifications and configured due time still sync',async()=>{
+  const f=fixture(),owner=await f.login(admin,'admin');await f.location(owner);await f.connect('admin');await f.post('calendar/settings',{syncIntervalSeconds:1800},owner);
+  const realNow=Date.now;let clock=realNow();Date.now=()=>clock;
+  try{await mocked(normalGoogle,async calls=>{
+    await syncCalendars(f.env,week);const completed=f.sqlite.prepare('SELECT synced_at FROM calendar_snapshots').get().synced_at,start=f.operations.length,count=calls.length;
+    clock+=600000;await calendarMaintenance(f.env,false);assert.equal(calls.length,count);assert.ok(!f.operations.slice(start).some(op=>op.sql.startsWith('SELECT week_start FROM (')),'no full fairness scan for a warm room');
+    f.sqlite.exec('UPDATE calendar_connections SET change_revision=change_revision+1');await calendarMaintenance(f.env,false);assert.ok(calls.length>count,'dirty notification bypasses the longer fallback');
+    const pushed=f.sqlite.prepare('SELECT synced_at,retry_at FROM calendar_snapshots').get();assert.ok(pushed.synced_at>completed);assert.equal(pushed.retry_at-pushed.synced_at,1800);
+    const pushedCount=calls.length;clock+=1799000;await calendarMaintenance(f.env,false);assert.equal(calls.length,pushedCount);clock+=1000;await calendarMaintenance(f.env,false);assert.ok(calls.length>pushedCount,'actual fallback waits for the configured lifetime');
+  });}finally{Date.now=realNow;}
+});
+
+test('manual selectors and claims use the live interval when settings change during either database read',async()=>{
+  const realNow=Date.now;const fixed=realNow();Date.now=()=>fixed;
+  try{for(const phase of ['settings','sources'])for(const [initial,next,age,expected]of [[3600,600,10,0],[600,3600,31,1]]){
+    const f=fixture(),owner=await f.login(admin,'admin');await f.location(owner);await f.connect('admin');f.sqlite.prepare('UPDATE room_settings SET sync_interval=?').run(initial);
+    const time=Math.floor(fixed/1000),seedAge=phase==='sources'&&expected===0?31:age;f.sqlite.prepare('INSERT INTO calendar_snapshots(member_sub,week_start,room_revision,connection_version,synced_at,retry_at) VALUES(?,?,2,?,?,?)').run('admin',week,'version-admin',time-seedAge,time-seedAge+initial);
+    const prepare=f.env.DB.prepare.bind(f.env.DB);let changed=false;f.env.DB.prepare=sql=>{const statement=prepare(sql),method=phase==='settings'?'first':'all',read=statement[method].bind(statement);statement[method]=async()=>{const result=await read();if(!changed&&(phase==='settings'?sql.startsWith('SELECT location,revision'):sql.startsWith('SELECT c.*'))){changed=true;if(phase==='sources'&&expected===0)f.sqlite.prepare('UPDATE calendar_snapshots SET synced_at=?,retry_at=?').run(time-age,time-age+initial);f.sqlite.prepare('UPDATE room_settings SET sync_interval=?').run(next);}return result;};return statement;};
+    await mocked(normalGoogle,async calls=>{await syncCalendars(f.env,week,true);assert.equal(calls.filter(call=>new URL(call.url).hostname==='oauth2.googleapis.com').length,expected,`${phase} ${initial}→${next}`);});
+  }}finally{Date.now=realNow;}
+});
+
+test('long fallback intervals do not postpone interrupted notification work after its source lease expires',async()=>{
+  const f=fixture(),owner=await f.login(admin,'admin');await f.location(owner);await f.connect('admin');await f.post('calendar/settings',{syncIntervalSeconds:3600},owner);
+  const realNow=Date.now;let clock=realNow();Date.now=()=>clock;
+  try{await mocked(normalGoogle,async calls=>{
+    await syncCalendars(f.env,week);const old=f.sqlite.prepare('SELECT synced_at,retry_at FROM calendar_snapshots').get(),count=calls.length;
+    f.sqlite.exec('UPDATE calendar_connections SET change_revision=change_revision+1');f.sqlite.prepare('UPDATE calendar_snapshots SET attempt_revision=(SELECT change_revision FROM calendar_connections),lease_id=?,lease_until=?').run('interrupted-worker',Math.floor(clock/1000)+180);
+    clock+=179000;await calendarMaintenance(f.env,false);assert.equal(calls.length,count,'live lease still owns its source');clock+=1000;await calendarMaintenance(f.env,false);assert.ok(calls.length>count,'expired lease recovers before the old one-hour retry');
+    const fresh=f.sqlite.prepare('SELECT synced_at,retry_at,lease_until,change_revision,attempt_revision FROM calendar_snapshots').get();assert.ok(fresh.synced_at>old.synced_at);assert.equal(fresh.retry_at-fresh.synced_at,3600);assert.equal(fresh.lease_until,0);assert.equal(fresh.change_revision,fresh.attempt_revision);
+  });}finally{Date.now=realNow;}
+});
+
+test('source staleness follows the chosen fallback and changing settings does not advance success time',async()=>{
+  const f=fixture(),owner=await f.login(admin,'admin');await f.location(owner);await f.connect('admin');await f.post('calendar/settings',{syncIntervalSeconds:1800},owner);await mocked(normalGoogle,()=>syncCalendars(f.env,week));
+  const now=Math.floor(Date.now()/1000);f.sqlite.prepare('UPDATE calendar_snapshots SET synced_at=?').run(now-1801);let feed=await (await f.get('calendar/feed?cached=1',owner)).json();assert.equal(feed.sources[0].state,'ready');const actual=feed.sources[0].syncedAt;
+  await f.post('calendar/settings',{syncIntervalSeconds:600},owner);feed=await (await f.get('calendar/feed?cached=1',owner)).json();assert.equal(feed.sources[0].state,'stale');assert.equal(feed.sources[0].syncedAt,actual);
 });
 
 test('shared feed is gated; only logged-in approved accounts become sources, not preapproved Emails',async()=>{

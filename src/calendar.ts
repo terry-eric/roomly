@@ -24,7 +24,8 @@ function syncFailureDiagnostic(error:unknown){
   console.warn(JSON.stringify({event:'calendar_sync_failed',code,providerStatus}));
 }
 const second=()=>Math.floor(Date.now()/1000);
-const syncInterval=10*60,manualCooldown=30;
+const allowedSyncIntervals=[600,900,1800,3600],manualCooldown=30;
+const syncInterval=(room:Room)=>allowedSyncIntervals.includes(room.sync_interval||0)?room.sync_interval!:600;
 const readonly='https://www.googleapis.com/auth/calendar.events.readonly';
 const legacyReadonly='https://www.googleapis.com/auth/calendar.readonly';
 const listReadonly='https://www.googleapis.com/auth/calendar.calendarlist.readonly';
@@ -75,7 +76,7 @@ export function taipeiWeek(value:string|number=Date.now()){
   if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(Date.parse(day+'T00:00:00Z'))||new Date(day+'T00:00:00Z').toISOString().slice(0,10)!==day)throw new CalendarError(400,'日期格式不正確。');
   const d=new Date(day+'T00:00:00Z');d.setUTCDate(d.getUTCDate()-((d.getUTCDay()+6)%7));return d.toISOString().slice(0,10);
 }
-async function settings(env:Env){return (await env.DB.prepare('SELECT location,revision,sources_revision,feed_revision FROM room_settings WHERE id=1').first<Room>())!;}
+async function settings(env:Env){return (await env.DB.prepare('SELECT location,revision,sources_revision,feed_revision,sync_interval FROM room_settings WHERE id=1').first<Room>())!;}
 // A rejected access token does not establish that the stored refresh grant was revoked.
 async function googleJSON(url:string,options:RequestInit={},tokenExchange=false){const response=await fetch(url,{...options,signal:options.signal?AbortSignal.any([options.signal,AbortSignal.timeout(20000)]):AbortSignal.timeout(20000)});let data:EventRecord;try{data=await response.json();}catch{throw new CalendarError(502,'Google 回應暫時無法讀取。');}if(!response.ok){if(tokenExchange&&data?.error==='invalid_grant')throw new CalendarError(401,'REAUTHORIZE');throw new CalendarError(502,'Google 日曆暫時無法同步，請稍後重試。',response.status);}return data;}
 const tokenRequest=(env:Env,values:Record<string,string>,signal?:AbortSignal)=>googleJSON('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,client_secret:env.GOOGLE_CLIENT_SECRET!,...values}),signal},true);
@@ -109,9 +110,11 @@ async function syncSource(env:Env,connection:Connection,week:string,room:Room,ma
   if(!room.location||connection.status!=='connected')return;
   const time=second(),lease=random();
   await env.DB.prepare('INSERT INTO calendar_snapshots(member_sub,week_start,room_revision,connection_version) VALUES(?,?,?,?) ON CONFLICT(member_sub,week_start) DO NOTHING').bind(connection.member_sub,week,room.revision,connection.version).run();
-  // Manual refresh bypasses the ten-minute cache, with a short per-source cooldown.
-  const due=manual?time+syncInterval-manualCooldown:time;
-  const claimed=await env.DB.prepare(`UPDATE calendar_snapshots SET lease_until=?,lease_id=?,attempt_revision=(SELECT c.change_revision FROM calendar_connections c WHERE c.member_sub=calendar_snapshots.member_sub) WHERE member_sub=? AND week_start=? AND lease_until<=? AND (retry_at<=? OR room_revision!=? OR connection_version!=? OR attempt_revision<(SELECT c.change_revision FROM calendar_connections c WHERE c.member_sub=calendar_snapshots.member_sub)) AND EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') AND EXISTS(SELECT 1 FROM calendar_connections WHERE member_sub=? AND version=? AND status='connected') AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=? AND other.connection_version=? AND other.week_start!=? AND other.lease_until>?) RETURNING attempt_revision`).bind(time+180,lease,connection.member_sub,week,time,due,room.revision,connection.version,connection.member_sub,connection.member_sub,connection.version,connection.member_sub,connection.version,week,time).first<{attempt_revision:number}>();
+  // Manual refresh bypasses the configured fallback, with a short source cooldown.
+  // An expired nonzero lease is interrupted work, not a completed attempt;
+  // reclaim it even if its previous success has a long future fallback time.
+  const due=manual?time-manualCooldown:time;
+  const claimed=await env.DB.prepare(`UPDATE calendar_snapshots SET lease_until=?,lease_id=?,attempt_revision=(SELECT c.change_revision FROM calendar_connections c WHERE c.member_sub=calendar_snapshots.member_sub) WHERE member_sub=? AND week_start=? AND lease_until<=? AND (retry_at<=?${manual?'+(SELECT sync_interval FROM room_settings WHERE id=1)':''} OR lease_until>0 OR room_revision!=? OR connection_version!=? OR attempt_revision<(SELECT c.change_revision FROM calendar_connections c WHERE c.member_sub=calendar_snapshots.member_sub)) AND EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') AND EXISTS(SELECT 1 FROM calendar_connections WHERE member_sub=? AND version=? AND status='connected') AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=? AND other.connection_version=? AND other.week_start!=? AND other.lease_until>?) RETURNING attempt_revision`).bind(time+180,lease,connection.member_sub,week,time,due,room.revision,connection.version,connection.member_sub,connection.member_sub,connection.version,connection.member_sub,connection.version,week,time).first<{attempt_revision:number}>();
   if(!claimed)return;
   // A complete source has a shorter deadline than its lease. Expired work may
   // neither change permission metadata nor commit over a later week's result.
@@ -167,20 +170,20 @@ async function syncSource(env:Env,connection:Connection,week:string,room:Room,ma
     const sorted=items.map(event=>({key:JSON.stringify([event.calendarKey||'',event.id,event.start]),serialized:JSON.stringify(event)}));
     sorted.sort((a,b)=>a.key.localeCompare(b.key)||a.serialized.localeCompare(b.serialized));
     const payload='['+sorted.map(event=>event.serialized).join(',')+']';if(encoder.encode(payload).length>1500000)throw new CalendarError(502,'SOURCE_LIMIT');
-    await env.DB.prepare(`UPDATE calendar_snapshots SET data=?,synced_at=?,retry_at=?,room_revision=?,connection_version=?,calendar_count=?,change_revision=?,lease_until=0,error_code=? WHERE member_sub=? AND week_start=? AND lease_id=? AND lease_until>? AND EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') AND EXISTS(SELECT 1 FROM calendar_connections WHERE member_sub=? AND version=? AND status='connected') AND EXISTS(SELECT 1 FROM room_settings WHERE id=1 AND revision=?)`).bind(payload,second(),second()+syncInterval,room.revision,connection.version,calendarIds.length,claimed.attempt_revision,partial?'PARTIAL_CALENDARS':null,connection.member_sub,week,lease,second(),connection.member_sub,connection.member_sub,connection.version,room.revision).run();
+    await env.DB.prepare(`UPDATE calendar_snapshots SET data=?,synced_at=?,retry_at=?+(SELECT sync_interval FROM room_settings WHERE id=1),room_revision=?,connection_version=?,calendar_count=?,change_revision=?,lease_until=0,error_code=? WHERE member_sub=? AND week_start=? AND lease_id=? AND lease_until>? AND EXISTS(SELECT 1 FROM members WHERE sub=? AND status='approved') AND EXISTS(SELECT 1 FROM calendar_connections WHERE member_sub=? AND version=? AND status='connected') AND EXISTS(SELECT 1 FROM room_settings WHERE id=1 AND revision=?)`).bind(payload,second(),second(),room.revision,connection.version,calendarIds.length,claimed.attempt_revision,partial?'PARTIAL_CALENDARS':null,connection.member_sub,week,lease,second(),connection.member_sub,connection.member_sub,connection.version,room.revision).run();
   }catch(error){
     syncFailureDiagnostic(error);
     const reauthorize=error instanceof CalendarError&&error.status===401&&error.message==='REAUTHORIZE';
     if(reauthorize)await env.DB.batch([env.DB.prepare("UPDATE calendar_connections SET status='reauthorize',refresh_cipher='',error_code='REAUTHORIZE' WHERE member_sub=? AND version=? AND EXISTS(SELECT 1 FROM calendar_snapshots owner WHERE owner.member_sub=? AND owner.week_start=? AND owner.lease_id=? AND owner.lease_until>?)").bind(connection.member_sub,connection.version,connection.member_sub,week,lease,second()),env.DB.prepare("DELETE FROM calendar_snapshots WHERE member_sub=? AND connection_version=? AND EXISTS(SELECT 1 FROM calendar_connections WHERE member_sub=? AND version=? AND status='reauthorize')").bind(connection.member_sub,connection.version,connection.member_sub,connection.version),...['calendar_watch_channels','calendar_watch_targets'].map(table=>env.DB.prepare(`DELETE FROM ${table} WHERE member_sub=? AND connection_version=? AND EXISTS(SELECT 1 FROM calendar_connections WHERE member_sub=? AND version=? AND status='reauthorize')`).bind(connection.member_sub,connection.version,connection.member_sub,connection.version))]);
-    else await env.DB.prepare('UPDATE calendar_snapshots SET error_code=?,retry_at=?,lease_until=0 WHERE member_sub=? AND week_start=? AND lease_id=? AND lease_until>?').bind('SYNC_FAILED',second()+syncInterval,connection.member_sub,week,lease,second()).run();
+    else await env.DB.prepare('UPDATE calendar_snapshots SET error_code=?,retry_at=?+(SELECT sync_interval FROM room_settings WHERE id=1),lease_until=0 WHERE member_sub=? AND week_start=? AND lease_id=? AND lease_until>?').bind('SYNC_FAILED',second(),connection.member_sub,week,lease,second()).run();
   }
 }
 export async function syncCalendars(env:Env,week=taipeiWeek(),manual=false,dirtyOnly=false,maxSources=Infinity){
   if(!calendarReady(env))return;
   const limit=Number.isFinite(maxSources)?Math.max(0,Math.floor(maxSources)):null;if(limit===0)return;
   const room=await settings(env);if(!room.location)return;
-  const time=second(),due=manual?time+syncInterval-manualCooldown:time;
-  const {results}=await env.DB.prepare(`SELECT c.* FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE m.status='approved' AND c.status='connected' ${dirtyOnly?'AND c.change_revision>COALESCE(s.change_revision,0)':''} AND (s.member_sub IS NULL OR (s.lease_until<=? AND (s.retry_at<=? OR s.room_revision!=? OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision))) AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=? AND other.lease_until>?) ORDER BY COALESCE(s.retry_at,0),c.member_sub ${limit===null?'':'LIMIT ?'}`).bind(week,time,due,room.revision,week,time,...(limit===null?[]:[limit])).all<Connection>();
+  const time=second(),due=manual?time-manualCooldown:time;
+  const {results}=await env.DB.prepare(`SELECT c.* FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE m.status='approved' AND c.status='connected' ${dirtyOnly?'AND c.change_revision>COALESCE(s.change_revision,0)':''} AND (s.member_sub IS NULL OR (s.lease_until<=? AND (s.retry_at<=?${manual?'+(SELECT sync_interval FROM room_settings WHERE id=1)':''} OR s.lease_until>0 OR s.room_revision!=? OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision))) AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=? AND other.lease_until>?) ORDER BY COALESCE(s.retry_at,0),c.member_sub ${limit===null?'':'LIMIT ?'}`).bind(week,time,due,room.revision,week,time,...(limit===null?[]:[limit])).all<Connection>();
   // Keep Google request concurrency bounded while visiting every due source.
   for(let i=0;i<results.length;i+=5){
     const batch=await Promise.allSettled(results.slice(i,i+5).map(c=>syncSource(env,c,week,room,manual)));
@@ -200,7 +203,7 @@ export async function enqueueCalendarSync(env:Env,week=taipeiWeek(),manual=false
   // does not spend a queue write/read/delete on an empty refresh.
   const row=manual
     ?await env.DB.prepare("SELECT COUNT(*) AS count FROM calendar_connections c JOIN members m ON m.sub=c.member_sub WHERE c.status='connected' AND m.status='approved'").first<{count:number}>()
-    :await env.DB.prepare(`SELECT COUNT(*) AS count FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE m.status='approved' AND c.status='connected' AND (s.member_sub IS NULL OR (s.lease_until<=? AND (s.retry_at<=? OR s.room_revision!=? OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision))) AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=? AND other.lease_until>?)`).bind(week,time,time,room.revision,week,time).first<{count:number}>();
+    :await env.DB.prepare(`SELECT COUNT(*) AS count FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE m.status='approved' AND c.status='connected' AND (s.member_sub IS NULL OR (s.lease_until<=? AND (s.retry_at<=? OR s.lease_until>0 OR s.room_revision!=? OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision))) AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=? AND other.lease_until>?)`).bind(week,time,time,room.revision,week,time).first<{count:number}>();
   if(!row||!Number.isSafeInteger(row.count)||row.count<=0)return false;
   if(!await reserveCalendarEnqueue(env,week,manual,time))return false;
   try{
@@ -248,6 +251,13 @@ export async function calendarAPI(path:string,request:Request,env:Env,member:Cal
     }catch{return redirect(env,'failed');}
   }
   if(path==='calendar/disconnect'&&request.method==='POST'){await removeConnection(env,member.sub);return reply({ok:true});}
+  if(path==='calendar/settings'&&request.method==='GET')return reply({syncIntervalSeconds:syncInterval(await settings(env))});
+  if(path==='calendar/settings'&&request.method==='POST'){
+    if(member.role!=='admin'||member.email!==env.ADMIN_EMAIL)throw new CalendarError(403,'只有管理員可以設定更新頻率。');
+    const body=await readBody();if(typeof body.syncIntervalSeconds!=='number'||!allowedSyncIntervals.includes(body.syncIntervalSeconds))throw new CalendarError(400,'請選擇 10、15、30 或 60 分鐘。');
+    await env.DB.prepare('UPDATE room_settings SET sync_interval=? WHERE id=1 AND sync_interval!=?').bind(body.syncIntervalSeconds,body.syncIntervalSeconds).run();
+    return reply({ok:true,syncIntervalSeconds:syncInterval(await settings(env))});
+  }
   if(path==='calendar/location'&&request.method==='POST'){
     if(member.role!=='admin'||member.email!==env.ADMIN_EMAIL)throw new CalendarError(403,'只有管理員可以設定共用會議室地點。');
     const body=await readBody();if(typeof body.location!=='string'||!body.location.trim()||body.location.trim().length>100)throw new CalendarError(400,'請輸入 1–100 字的會議室地點。');
@@ -268,14 +278,14 @@ export async function calendarAPI(path:string,request:Request,env:Env,member:Cal
     if(!cachedOnly){if(env.CALENDAR_SYNC_QUEUE)syncQueued=await enqueueCalendarSync(env,week,manual,true);else await syncCalendars(env,week,manual);}
     const sessionHash=await digest(session(request));
     const readRoom=async()=>{
-      const room=await env.DB.prepare("SELECT r.location,r.revision,r.sources_revision,r.feed_revision FROM room_settings r JOIN members m ON m.sub=? AND m.status='approved' JOIN sessions s ON s.member_sub=m.sub AND s.hash=? AND s.expires_at>? WHERE r.id=1").bind(member.sub,sessionHash,second()).first<Room>();
+      const room=await env.DB.prepare("SELECT r.location,r.revision,r.sources_revision,r.feed_revision,r.sync_interval FROM room_settings r JOIN members m ON m.sub=? AND m.status='approved' JOIN sessions s ON s.member_sub=m.sub AND s.hash=? AND s.expires_at>? WHERE r.id=1").bind(member.sub,sessionHash,second()).first<Room>();
       if(!room)throw new CalendarError(403,'登入或使用資格已變更，請重新確認。');return room;
     };
     const result=await cachedCalendarFeed(env,week,await settings(env),readRoom,async room=>{
       const {results}=await env.DB.prepare(`SELECT m.email,c.status,c.shared_calendars,s.calendar_count,s.data,s.synced_at,s.error_code FROM members m LEFT JOIN calendar_connections c ON c.member_sub=m.sub LEFT JOIN calendar_snapshots s ON s.member_sub=m.sub AND s.week_start=? AND s.room_revision=? AND s.connection_version=c.version WHERE m.status='approved' ORDER BY m.email`).bind(week,room.revision).all<FeedRow>();return results;
     });
-    const sources=result.rows.map(row=>({email:row.email,state:!row.status?'unauthorized':row.status==='reauthorize'?'reauthorize':row.error_code?'error':!row.synced_at?'waiting':second()-row.synced_at>2*syncInterval?'stale':'ready',syncedAt:row.synced_at||null,sharedCalendars:!!row.shared_calendars,calendarCount:row.shared_calendars?(row.calendar_count||1):1,events:row.status==='connected'&&row.data?JSON.parse(row.data).filter((event:EventRecord)=>row.shared_calendars||!event.calendarKey):[]}));
-    const response=reply({week,location:result.room.location,configured:calendarReady(env),email:member.email,isAdmin:member.role==='admin'&&member.email===env.ADMIN_EMAIL,syncQueued,sources});response.headers.set('X-Roomly-Cache',result.cache);return response;
+    const sources=result.rows.map(row=>({email:row.email,state:!row.status?'unauthorized':row.status==='reauthorize'?'reauthorize':row.error_code?'error':!row.synced_at?'waiting':second()-row.synced_at>2*syncInterval(result.room)?'stale':'ready',syncedAt:row.synced_at||null,sharedCalendars:!!row.shared_calendars,calendarCount:row.shared_calendars?(row.calendar_count||1):1,events:row.status==='connected'&&row.data?JSON.parse(row.data).filter((event:EventRecord)=>row.shared_calendars||!event.calendarKey):[]}));
+    const response=reply({week,location:result.room.location,syncIntervalSeconds:syncInterval(result.room),configured:calendarReady(env),email:member.email,isAdmin:member.role==='admin'&&member.email===env.ADMIN_EMAIL,syncQueued,sources});response.headers.set('X-Roomly-Cache',result.cache);return response;
   }
   throw new CalendarError(404,'找不到此功能。');
 }
@@ -288,6 +298,16 @@ export async function calendarMaintenance(env:Env,fullSync=true){
   }
   if(!calendarReady(env))return;
   const time=second(),current=taipeiWeek();
+  // Use indexed existence checks before the heavier fair week/admission scan.
+  // Dirty generations and interrupted leases remain durable work regardless
+  // of the chosen fallback interval. False positives only run the normal scan.
+  const pending=await env.DB.prepare(`SELECT location,
+    EXISTS(SELECT 1 FROM calendar_snapshots WHERE retry_at<=? OR (lease_until>0 AND lease_until<=?))
+    OR EXISTS(SELECT 1 FROM calendar_connections c JOIN members m ON m.sub=c.member_sub WHERE c.status='connected' AND m.status='approved' AND (
+      EXISTS(SELECT 1 FROM calendar_snapshots s WHERE s.member_sub=c.member_sub AND (s.room_revision!=r.revision OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision))
+      OR NOT EXISTS(SELECT 1 FROM calendar_snapshots s WHERE s.member_sub=c.member_sub AND s.week_start=?))) AS due
+    FROM room_settings r WHERE id=1`).bind(time,time,current).first<{location:string;due:number}>();
+  if(!pending?.location||!pending.due)return;
   // Each producer tick selects one week and a bounded batch of small jobs
   // from regular due work and push generations, without a second fallback loop.
   // retry_at advances after both success and failure, so oldest eligible work
@@ -296,7 +316,7 @@ export async function calendarMaintenance(env:Env,fullSync=true){
   // Skip short-lived admission gates so a queued week cannot starve other
   // weeks. Expiry still rediscovers work after a lost job or a hard interruption.
   const admission=env.CALENDAR_SYNC_QUEUE?' WHERE NOT EXISTS(SELECT 1 FROM calendar_enqueue_gates g WHERE g.week_start=due.week_start AND (g.regular_until>? OR g.manual_until>?))':'';
-  const {results}=await env.DB.prepare(`SELECT week_start FROM (SELECT s.week_start,MIN(s.retry_at) AS attempted FROM calendar_snapshots s JOIN calendar_connections c ON c.member_sub=s.member_sub JOIN members m ON m.sub=c.member_sub JOIN room_settings r ON r.id=1 WHERE c.status='connected' AND m.status='approved' AND s.lease_until<=? AND (s.retry_at<=? OR s.room_revision!=r.revision OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision) AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=s.week_start AND other.lease_until>?) GROUP BY s.week_start UNION ALL SELECT ? AS week_start,0 AS attempted WHERE EXISTS(SELECT 1 FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE c.status='connected' AND m.status='approved' AND s.member_sub IS NULL AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=? AND other.lease_until>?))) due${admission} GROUP BY week_start ORDER BY MIN(attempted),week_start LIMIT 1`).bind(time,time,time,current,current,current,time,...(env.CALENDAR_SYNC_QUEUE?[time,time]:[])).all<{week_start:string}>();
+  const {results}=await env.DB.prepare(`SELECT week_start FROM (SELECT s.week_start,MIN(s.retry_at) AS attempted FROM calendar_snapshots s JOIN calendar_connections c ON c.member_sub=s.member_sub JOIN members m ON m.sub=c.member_sub JOIN room_settings r ON r.id=1 WHERE c.status='connected' AND m.status='approved' AND s.lease_until<=? AND (s.retry_at<=? OR s.lease_until>0 OR s.room_revision!=r.revision OR s.connection_version!=c.version OR s.attempt_revision<c.change_revision) AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=s.week_start AND other.lease_until>?) GROUP BY s.week_start UNION ALL SELECT ? AS week_start,0 AS attempted WHERE EXISTS(SELECT 1 FROM calendar_connections c JOIN members m ON m.sub=c.member_sub LEFT JOIN calendar_snapshots s ON s.member_sub=c.member_sub AND s.week_start=? WHERE c.status='connected' AND m.status='approved' AND s.member_sub IS NULL AND NOT EXISTS(SELECT 1 FROM calendar_snapshots other WHERE other.member_sub=c.member_sub AND other.connection_version=c.version AND other.week_start!=? AND other.lease_until>?))) due${admission} GROUP BY week_start ORDER BY MIN(attempted),week_start LIMIT 1`).bind(time,time,time,current,current,current,time,...(env.CALENDAR_SYNC_QUEUE?[time,time]:[])).all<{week_start:string}>();
   if(results[0]){
     if(env.CALENDAR_SYNC_QUEUE){
       // The producer does not claim a source or mark it synced. The consumer

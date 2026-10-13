@@ -14,6 +14,12 @@ test('member identity explains missing management rights, and polling removes ad
  const user={email:'roomly-admin@gmail.com',status:'approved',isAdmin:true,pending:0},h=harness(user);await h.access.ready;Object.assign(user,{email:'member@example.com',isAdmin:false});await h.access.ensureAllowed();for(const selector of ['#admin-link','#settings-admin-link'])assert.equal(h.el(selector).hidden,true);assert.equal(h.el('#current-account').textContent,user.email);assert.match(h.el('#account-role').textContent,/一般成員/);
 });
 
+test('approved boards receive changed global intervals through the existing identity poll',async()=>{
+ const user={email:'member@example.com',status:'approved',isAdmin:false,syncIntervalSeconds:600},h=harness(user);await h.access.ready;assert.equal(h.events.length,0);
+ user.syncIntervalSeconds=1800;await h.access.ensureAllowed();assert.equal(h.events.length,1);assert.equal(h.events[0].type,'roomly:settingschanged');assert.equal(h.events[0].detail.syncIntervalSeconds,1800);
+ await h.access.ensureAllowed();assert.equal(h.events.length,1,'unchanged settings do not restart timers');
+});
+
 test('Google sign-in follows the card width on rotation without resetting the login challenge',async()=>{
  const elements=new Map(),renders=[],observers=[],initializations=[];
  const el=selector=>{if(!elements.has(selector))elements.set(selector,{hidden:false,clientWidth:233,textContent:'',addEventListener(){},replaceChildren(){}});return elements.get(selector);};

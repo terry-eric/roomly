@@ -241,18 +241,18 @@ export function createHandler(verify:Verifier=verifyCredential){return {
           const approved=member.status==='approved',admin=isAdmin(member,env),calendarConfigured=calendarReady(env);
           // Authentication remains a fresh lookup. Content-free revisions avoid
           // scanning every approved account on each visible board's minute poll.
-          const metadata=await env.DB.prepare(`SELECT r.sources_revision,r.calendar_revision,
+          const metadata=await env.DB.prepare(`SELECT r.sources_revision,r.calendar_revision,r.sync_interval,
             (SELECT state FROM notifications WHERE member_sub=?) AS notification,
             CASE WHEN ?=1 THEN (SELECT COUNT(*) FROM members WHERE status='pending') ELSE 0 END AS pending,
             c.status AS connection_status,c.shared_calendars
             FROM room_settings r LEFT JOIN calendar_connections c ON c.member_sub=? AND ?=1 AND ?=1 WHERE r.id=1`)
             .bind(member.sub,admin?1:0,member.sub,approved?1:0,calendarConfigured?1:0)
-            .first<{sources_revision:number;calendar_revision:number;notification:string|null;pending:number;connection_status:string|null;shared_calendars:number|null}>();
+            .first<{sources_revision:number;calendar_revision:number;sync_interval:number;notification:string|null;pending:number;connection_status:string|null;shared_calendars:number|null}>();
           if(!metadata)throw new HttpError(503,'服務暫時無法使用，請稍後重試。');
           const sourcesRevision=approved?await hash(String(metadata.sources_revision)):null;
           const calendarRevision=approved&&calendarConfigured?await hash(String(metadata.calendar_revision)):null;
           const calendarAuthorizationRequired=approved&&calendarConfigured&&(metadata.connection_status!=='connected'||!metadata.shared_calendars);
-          return json({email:member.email,name:member.name,status:member.status,isAdmin:admin,notification:env.EMAIL&&env.MAIL_FROM?(metadata.notification||null):'disabled',pending:metadata.pending||0,sourcesRevision,calendarRevision,calendarConfigured,calendarAuthorizationRequired},200,await renewSession(request,env,member));
+          return json({email:member.email,name:member.name,status:member.status,isAdmin:admin,notification:env.EMAIL&&env.MAIL_FROM?(metadata.notification||null):'disabled',pending:metadata.pending||0,sourcesRevision,calendarRevision,calendarConfigured,calendarAuthorizationRequired,syncIntervalSeconds:approved?metadata.sync_interval:null},200,await renewSession(request,env,member));
         }
         if(apiPath==='calendar-sources'&&request.method==='GET'){
           if(member.status!=='approved')throw new HttpError(403,'通過白名單後才能讀取日曆來源。');

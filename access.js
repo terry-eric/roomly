@@ -110,6 +110,7 @@
       const account=document.querySelector('#current-account');if(account)account.textContent=info.email;
       const role=document.querySelector('#account-role');if(role)role.textContent=info.isAdmin?'管理員 · 可設定地點與管理白名單':'一般成員 · 地點與白名單由管理員設定';
       if(page==='board'&&previous&&previous.status==='approved'&&typeof window.dispatchEvent==='function'&&typeof CustomEvent==='function'){
+        if(typeof info.syncIntervalSeconds==='number'&&previous.syncIntervalSeconds!==info.syncIntervalSeconds)window.dispatchEvent(new CustomEvent('roomly:settingschanged',{detail:{syncIntervalSeconds:info.syncIntervalSeconds}}));
         if(typeof previous.sourcesRevision==='string'&&typeof info.sourcesRevision==='string'&&previous.sourcesRevision!==info.sourcesRevision)window.dispatchEvent(new CustomEvent('roomly:sourceschanged',{detail:{sourcesRevision:info.sourcesRevision}}));
         else if(typeof previous.calendarRevision==='string'&&typeof info.calendarRevision==='string'&&previous.calendarRevision!==info.calendarRevision)window.dispatchEvent(new CustomEvent('roomly:calendarchanged',{detail:{calendarRevision:info.calendarRevision}}));
       }

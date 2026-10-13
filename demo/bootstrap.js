@@ -18,6 +18,8 @@
     renderDemo();
     app.notify('已重新載入虛構範例，沒有連接 Google。');
   };
+  $('#open-sync-settings').onclick = () => app.view('import');
+  $('#sync-settings').hidden = true;
   $('#current-account').textContent = '示範訪客（虛構）';
   $('#account-role').textContent = '此示範不會要求登入或授權';
   $('#calendar-settings').innerHTML = `

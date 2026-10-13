@@ -3,7 +3,9 @@
   const A=RoomApp,access=window.RoomlyAccess,$=s=>document.querySelector(s);
   let feed=null,generation=0,activeRun=0,busy=false,live=true,authorizing=false,locationDirty=false,locationSaving=false,locationFeedback=null,cachedRefreshPending=false,statusRefreshPending=false;
   const manualQueuedAt=new Map();
-  const syncMessage='日曆變更時自動同步，每 10 分鐘補查';
+  const allowedSyncIntervals=[600,900,1800,3600];
+  let syncIntervalSeconds=600,periodicTimer=null,intervalDirty=false,intervalSaving=false;
+  let syncMessage='日曆變更時自動同步，每 10 分鐘補查';
   const callbackMessages={connected:'我的日曆已完整授權，後端會自動同步符合會議室地點的邀請。',cancelled:'你已取消日曆授權，仍可查看已同步的共用會議。',scope:'請同意日曆活動唯讀及日曆清單唯讀兩項權限，才能完成授權。',account:'請授權與網站登入相同的 Google 帳號。',refresh:'尚未取得背景同步授權，請重新授權。',failed:'Google 日曆授權未完成，請稍後重試。'};
   const returnParams=new URLSearchParams(location.search||''),calendarOutcome=returnParams.get('calendar');
   let callbackMessage=callbackMessages[calendarOutcome]||'',autoAuthorizePending=returnParams.get('login')==='success'&&!returnParams.has('calendar');
@@ -14,11 +16,29 @@
     catch{autoAuthorizePending=false;}
   }
   const panel=$('#calendar-settings');
-  panel.innerHTML=`<span class="integration-icon google">G</span><span class="pill neutral" id="google-badge">共用看板</span><h2>我的日曆授權</h2><p class="muted">首次登入並通過白名單後，須完整同意 Google 日曆活動唯讀及日曆清單唯讀兩項權限；授權有效時不用重複同意。主要日曆及列表中未隱藏、可讀取活動詳情的共用日曆，會依會議室地點彙整到同一個看板。</p><div class="google-actions"><button class="primary" id="google-connect" hidden>重新授權日曆</button><button class="quiet outlined" id="google-demo">本機資料</button></div><p id="google-shared-hint" class="small muted" hidden>日曆授權尚未完成或需要更新。請在 Google 同意頁完整同意「日曆活動唯讀」及「日曆清單唯讀」兩項權限；少任何一項都無法完成授權。若曾取消或未完成，可按「重新授權日曆」再試一次。只有你在 Google 同意後，才會分享符合地點的活動。</p><p id="google-status" class="google-status" role="status">正在載入共用看板…</p><div class="google-actions"><button class="primary" id="google-sync">同步</button><button class="quiet" id="google-disconnect" disabled>停止分享我的日曆</button></div><p class="small muted">日曆變更時自動同步，每 10 分鐘補查，關閉網頁後仍會更新。看板每分鐘檢查後端是否有新資料。按「同步」可安排更新，完成後來源時間會更新；30 秒內不會重複安排。預約請在 <a href="https://calendar.google.com/" target="_blank" rel="noopener noreferrer">Google 日曆</a>建立。<a href="privacy.html" target="_blank" rel="noopener">日曆分享與隱私說明 ↗</a></p>`;
+  panel.innerHTML=`<span class="integration-icon google">G</span><span class="pill neutral" id="google-badge">共用看板</span><h2>我的日曆授權</h2><p class="muted">首次登入並通過白名單後，須完整同意 Google 日曆活動唯讀及日曆清單唯讀兩項權限；授權有效時不用重複同意。主要日曆及列表中未隱藏、可讀取活動詳情的共用日曆，會依會議室地點彙整到同一個看板。</p><div class="google-actions"><button class="primary" id="google-connect" hidden>重新授權日曆</button><button class="quiet outlined" id="google-demo">本機資料</button></div><p id="google-shared-hint" class="small muted" hidden>日曆授權尚未完成或需要更新。請在 Google 同意頁完整同意「日曆活動唯讀」及「日曆清單唯讀」兩項權限；少任何一項都無法完成授權。若曾取消或未完成，可按「重新授權日曆」再試一次。只有你在 Google 同意後，才會分享符合地點的活動。</p><p id="google-status" class="google-status" role="status">正在載入共用看板…</p><div class="google-actions"><button class="primary" id="google-sync">同步</button><button class="quiet" id="google-disconnect" disabled>停止分享我的日曆</button></div><p class="small muted"><span id="sync-frequency-note">日曆變更時自動同步，每 10 分鐘補查</span>，關閉網頁後仍會更新。看板每分鐘檢查後端是否有新資料。按「同步」可安排更新，完成後來源時間會更新；30 秒內不會重複安排。預約請在 <a href="https://calendar.google.com/" target="_blank" rel="noopener noreferrer">Google 日曆</a>建立。<a href="privacy.html" target="_blank" rel="noopener">日曆分享與隱私說明 ↗</a></p>`;
   panel.parentElement.prepend(panel);
   $('#shared-calendars').hidden=false;$('#location-filter').hidden=false;
   $('#people .notice').textContent='依所選日期彙整主辦人與受邀參與者。受邀與回覆狀態不代表實際出席。';
   const status=text=>$('#google-status').textContent=text;
+  function restartPeriodicTimer(){
+    if(periodicTimer!==null)clearInterval(periodicTimer);
+    periodicTimer=setInterval(()=>{if(!document.hidden&&live&&!busy&&!locationSaving&&!authorizing)void sync();},syncIntervalSeconds*1000);
+  }
+  function renderSyncSettings(){
+    const admin=!!feed?.isAdmin,input=$('#sync-interval'),button=$('#sync-settings-save');
+    if(!intervalDirty||!admin)input.value=String(syncIntervalSeconds);
+    input.disabled=!admin||intervalSaving;button.hidden=!admin;button.disabled=!admin||intervalSaving;
+    button.textContent=intervalSaving?'儲存中…':'儲存';
+  }
+  function setSyncInterval(value){
+    if(!allowedSyncIntervals.includes(value))return;
+    const changed=value!==syncIntervalSeconds;syncIntervalSeconds=value;
+    syncMessage=`日曆變更時自動同步，每 ${value/60} 分鐘補查`;
+    $('#sync-frequency-note').textContent=syncMessage;
+    if(changed&&periodicTimer!==null)restartPeriodicTimer();
+    renderSyncSettings();
+  }
   const room=()=>({id:'forest',name:feed?.location||'主會議室',meta:'共用 Google 日曆邀請'});
   const labels={unauthorized:'尚未授權自己的日曆',reauthorize:'Google 授權已失效，請本人重新授權',waiting:'等待首次同步',error:'同步失敗，暫時無法確認最新預約',stale:'資料逾時，等待重新同步'};
   function successTime(source){
@@ -103,7 +123,7 @@
         feeds.push(data);
       }
       if(run!==generation)return;
-      if(feeds.some((data,index)=>!Array.isArray(data.sources)||data.week!==weeks[index]||typeof data.location!=='string'||data.location!==feeds[0].location||data.configured!==feeds[0].configured||data.email!==feeds[0].email||data.isAdmin!==feeds[0].isAdmin||(data.syncQueued!==undefined&&typeof data.syncQueued!=='boolean')))throw Error('共用看板回應不正確，請再試一次。');
+      if(feeds.some((data,index)=>!Array.isArray(data.sources)||data.week!==weeks[index]||typeof data.location!=='string'||data.location!==feeds[0].location||data.configured!==feeds[0].configured||data.email!==feeds[0].email||data.isAdmin!==feeds[0].isAdmin||(data.syncQueued!==undefined&&typeof data.syncQueued!=='boolean')||(data.syncIntervalSeconds!==undefined&&(!allowedSyncIntervals.includes(data.syncIntervalSeconds)||data.syncIntervalSeconds!==feeds[0].syncIntervalSeconds))))throw Error('共用看板回應不正確，請再試一次。');
       const sourcesForRange=[];
       for(const source of feeds[0].sources){
         const parts=feeds.map(data=>data.sources.find(s=>s.email===source.email));
@@ -125,7 +145,8 @@
       }
       const data={...feeds[0],syncQueued:feeds.some(data=>data.syncQueued===true),sources:sourcesForRange};
       if(manual&&data.syncQueued)manualQueuedAt.set(manualKey,Date.now());
-      feed=data;statusRefreshPending=false;renderSources();
+      feed=data;setSyncInterval(data.syncIntervalSeconds===undefined?600:data.syncIntervalSeconds);statusRefreshPending=false;renderSources();
+      if(!intervalDirty&&!intervalSaving){$('#sync-settings-status').textContent=feed.isAdmin?`目前每 ${syncIntervalSeconds/60} 分鐘補查。可選擇後儲存。`:`目前每 ${syncIntervalSeconds/60} 分鐘補查，由管理員設定。`;$('#sync-settings-status').dataset.state='info';}
       const sources=data.sources.map(s=>({calendar:{id:s.email,name:s.email,kind:'person'},events:s.events}));
       const events=RoomCore.mergeGoogle(sources,{room:room()}).filter(e=>e.roomIds.length&&RoomCore.overlapsDays(Date.parse(e.startISO),Date.parse(e.endISO),days));
       const unresolved=data.sources.filter(s=>s.state!=='ready').length;
@@ -150,7 +171,7 @@
       feed=null;$('#shared-calendar-list').innerHTML='';$('#shared-summary').textContent='已登入帳號';$('#shared-calendar-status').textContent=message;$('#google-connect').disabled=true;$('#google-shared-hint').hidden=true;$('#google-disconnect').disabled=true;
       renderOwnStatus();
       A.setLive({rooms:[room()],message:syncMessage,availabilityComplete:false});
-      renderLocation();return false;
+      renderLocation();renderSyncSettings();return false;
     }
     finally{if(run===activeRun){busy=false;$('#google-sync').disabled=$('#google-start').disabled=$('#refresh-sources').disabled=false;$('#google-start').textContent='同步';flushCachedRefresh();}}
   }
@@ -172,16 +193,30 @@
     }
   }
   window.addEventListener?.('roomly:calendarchanged',()=>{if(live){cachedRefreshPending=true;flushCachedRefresh();}});
+  window.addEventListener?.('roomly:settingschanged',event=>{setSyncInterval(event?.detail?.syncIntervalSeconds);if(live){cachedRefreshPending=true;flushCachedRefresh();}});
   window.addEventListener?.('roomly:sourceschanged',()=>{
     if(!live)return;
     generation++;cachedRefreshPending=true;
     const rooms=[room()];feed=null;
-    renderOwnStatus();
+    renderOwnStatus();renderSyncSettings();
     $('#shared-calendar-list').innerHTML='';$('#shared-summary').textContent='已登入帳號';$('#shared-calendar-status').textContent='正在更新使用資格…';$('#google-connect').hidden=true;$('#google-disconnect').disabled=true;
     A.setLive({rooms,events:[],ready:false,availabilityComplete:false,message:syncMessage});
     flushCachedRefresh();
   });
   $('#google-start').onclick=()=>sync(true,true);
+  $('#open-sync-settings').onclick=()=>A.view('import');
+  $('#sync-interval').onchange=()=>{intervalDirty=Number($('#sync-interval').value)!==syncIntervalSeconds;$('#sync-settings-status').textContent=intervalDirty?'選擇後點「儲存」套用至所有裝置。':`目前每 ${syncIntervalSeconds/60} 分鐘補查。`;$('#sync-settings-status').dataset.state='info';};
+  $('#sync-settings-form').onsubmit=async event=>{
+    event.preventDefault();if(intervalSaving)return;
+    const message=$('#sync-settings-status');
+    if(!feed?.isAdmin){message.textContent='只有管理員可以設定更新頻率。';message.dataset.state='error';return;}
+    const value=Number($('#sync-interval').value);
+    if(!allowedSyncIntervals.includes(value)){message.textContent='請選擇 10、15、30 或 60 分鐘。';message.dataset.state='error';return;}
+    intervalSaving=true;renderSyncSettings();message.textContent='正在儲存更新頻率…';
+    try{const result=await access.request('calendar/settings',{syncIntervalSeconds:value});if(!allowedSyncIntervals.includes(result.syncIntervalSeconds))throw Error('更新設定回應不正確。');intervalDirty=false;setSyncInterval(result.syncIntervalSeconds);if(feed)feed.syncIntervalSeconds=result.syncIntervalSeconds;message.textContent=`已儲存：每 ${result.syncIntervalSeconds/60} 分鐘補查，所有裝置共用。`;message.dataset.state='success';cachedRefreshPending=true;}
+    catch(error){message.textContent=error.message||'儲存失敗，請稍後重試。';message.dataset.state='error';}
+    finally{intervalSaving=false;renderSyncSettings();flushCachedRefresh();}
+  };
   $('#google-sync').onclick=()=>sync(true,true);$('#refresh-sources').onclick=()=>sync(false,true);
   $('#google-disconnect').onclick=async()=>{try{await access.request('calendar/disconnect',{});await sync();status('已停止分享；後端授權與我的會議快取已移除。可於 Google 第三方連線設定撤銷授權。');}catch(error){status(error.message);}};
   $('#google-demo').onclick=()=>{generation++;activeRun=0;busy=false;live=false;cachedRefreshPending=statusRefreshPending=false;renderOwnStatus();$('#google-sync').disabled=$('#google-start').disabled=$('#refresh-sources').disabled=false;$('#google-start').textContent='同步';A.showDemo();A.view('overview');status('目前查看這台裝置的本機資料；共用日曆仍由後端同步。');};
@@ -201,7 +236,7 @@
     }catch(error){locationNotice(error.message||'地點儲存失敗，請稍後重試。','error');}
     finally{locationSaving=false;renderLocation();flushCachedRefresh();}
   };
-  renderLocation();
+  renderLocation();renderSyncSettings();
   window.GoogleSync={sync};
   if(access?.ready)void access.ready.then(async allowed=>{
     if(!allowed)return;
@@ -214,7 +249,7 @@
     }
     return sync();
   }).catch(()=>status('請先登入正式網站。'));
-  setInterval(()=>{if(!document.hidden&&live&&!busy&&!locationSaving&&!authorizing)void sync();},10*60*1000);
+  restartPeriodicTimer();
   // Successful unchanged syncs advance syncedAt without changing calendarRevision.
   // Read committed timestamps for connected sources even when meetings are unchanged.
   setInterval(()=>{if(!document.hidden&&live&&!authorizing&&needsStatusRefresh()){statusRefreshPending=true;flushCachedRefresh();}},60*1000);

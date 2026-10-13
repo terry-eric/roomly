@@ -34,7 +34,7 @@
   <main>
     <section id="overview" class="view">
       <div class="tablet-heading"><div><h1 id="room-name">主會議室</h1><p id="week-label"></p></div><button class="primary" id="new-booking">＋ 預約</button></div>
-      <div class="google-entry"><div class="google-entry-status"><div class="notice" role="status">日曆變更時自動同步，每 10 分鐘補查</div><p id="own-sync-status" class="own-sync-status" hidden></p></div><div class="google-entry-actions"><button id="pwa-install" type="button" hidden>安裝 App</button><button class="primary" id="google-start">同步</button></div></div>
+      <div class="google-entry"><div class="google-entry-status"><div class="notice" role="status">日曆變更時自動同步，每 10 分鐘補查</div><p id="own-sync-status" class="own-sync-status" hidden></p></div><div class="google-entry-actions"><button id="pwa-install" type="button" hidden>安裝 App</button><button class="quiet outlined" id="open-sync-settings" type="button">⚙ 設定</button><button class="primary" id="google-start">同步</button></div></div>
       <form id="location-filter" class="location-filter" novalidate hidden><label for="room-location">共用會議室地點</label><div class="location-controls"><input id="room-location" class="google-input" type="text" required maxlength="100" placeholder="輸入邀請的地點文字" autocomplete="off" aria-describedby="location-status" disabled><button id="location-apply" class="primary" type="submit" disabled>新增地點</button></div><p id="location-status" class="small muted" role="status">正在載入地點設定…</p></form>
       <details id="shared-calendars" class="shared-calendars" hidden><summary id="shared-summary">已登入帳號</summary><p id="shared-calendar-status" class="small muted" role="status">每位通過白名單的已登入帳號，都會成為共用看板的來源。</p><button id="refresh-sources" class="quiet outlined" type="button">更新來源狀態</button><div id="shared-calendar-list"></div></details>
       <div class="tablet-toolbar">
@@ -47,7 +47,7 @@
     <section id="import" class="view" hidden>
       <div class="page-heading"><h1>設定</h1></div>
       <div class="settings-account"><div><span class="small muted">目前登入帳號</span><strong id="current-account">正在載入…</strong><span id="account-role" class="small muted"></span></div><a id="settings-admin-link" href="admin.html" hidden>白名單管理</a></div>
-      <div class="import-grid"><article id="calendar-settings" class="panel"><h2>我的日曆授權</h2><p class="muted">正在載入日曆設定…</p></article></div>
+      <div class="import-grid"><article id="sync-settings" class="panel"><h2>更新頻率</h2><p class="muted">日曆有變更時仍會自動同步。調長補查間隔可減少雲端用量；不支援變更通知的日曆可能較晚更新。</p><form id="sync-settings-form" class="sync-settings-form"><label for="sync-interval">自動補查間隔（所有裝置共用）</label><div class="sync-settings-controls"><select id="sync-interval" disabled><option value="600">10 分鐘</option><option value="900">15 分鐘</option><option value="1800">30 分鐘</option><option value="3600">60 分鐘</option></select><button id="sync-settings-save" class="primary" type="submit" disabled hidden>儲存</button></div></form><p id="sync-settings-status" class="small muted" role="status">正在載入更新設定…</p><p class="small muted">管理員設定後立即套用。手動「同步」會立即安排更新；來源的成功時間只在真正完成同步後前進。網頁每分鐘檢查看板狀態與登入資格。</p></article><article id="calendar-settings" class="panel"><h2>我的日曆授權</h2><p class="muted">正在載入日曆設定…</p></article></div>
     </section>
   </main>
 </div>
