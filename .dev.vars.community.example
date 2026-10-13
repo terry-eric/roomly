@@ -1,0 +1,4 @@
+# Copy to .dev.vars for local community mode; never commit real values.
+GOOGLE_CLIENT_ID="YOUR_CLIENT_ID.apps.googleusercontent.com"
+GOOGLE_CLIENT_SECRET="YOUR_GOOGLE_CLIENT_SECRET"
+PUBLIC_CALENDAR_TOKEN_KEY="YOUR_RANDOM_64_HEX_CHARACTERS"

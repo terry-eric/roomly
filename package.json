@@ -7,6 +7,13 @@
   "scripts": {
     "demo": "node scripts/serve-demo.mjs",
     "build:demo": "node scripts/build-demo.mjs",
+    "build:community": "node scripts/build-community.mjs",
+    "build:pages": "node scripts/build-pages.mjs",
+    "dev:community": "npm run build:community && npm run db:community:local && wrangler dev --config wrangler.community.local.jsonc --port 3000",
+    "db:community:local": "wrangler d1 migrations apply roomly-community --local --config wrangler.community.local.jsonc",
+    "db:community:remote": "wrangler d1 migrations apply roomly-community --remote --config wrangler.community.jsonc",
+    "deploy:community": "npm run build:community && wrangler deploy --config wrangler.community.jsonc",
+    "check:community": "npm run build:community && wrangler deploy --dry-run --config wrangler.community.local.jsonc",
     "dev": "npm run build && npm run db:local && wrangler dev --config wrangler.local.jsonc --port 3000",
     "db:local": "wrangler d1 migrations apply roomly-access --local --config wrangler.local.jsonc",
     "db:remote": "wrangler d1 migrations apply roomly-access --remote",

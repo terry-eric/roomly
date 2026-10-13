@@ -1,123 +1,119 @@
 # Roomly 會議室看板
 
-把平板放在會議室門外，就能查看目前的預約與接下來的會議；其他成員也能用手機 App（PWA）查看同一份時間表，出發前先確認有沒有空檔。Roomly 將多人 Google 日曆的會議室預約彙整成每格 30 分鐘的共用看板，適合只有一間會議室的團隊。
+把平板放在會議室門外，讓經過的人查看目前與接下來的預約；其他成員也能在手機開啟同一個空間，先確認是否有空檔。Roomly 將多人 Google 日曆中符合會議室地點的活動，彙整成每格 30 分鐘的共用甘特圖。
 
-**[開啟線上展示](https://terry-eric.github.io/roomly/)**：全部是虛構會議與人物，可以直接操作，不需帳號。GitHub Pages 展示版不會登入 Google、讀取真實日曆、寄信或提供共用後端。
+**[開始使用免費公開版](https://demo.terry878.org/roomly/)** · **[GitHub Pages 介紹與入口](https://terry-eric.github.io/roomly/)** · **[支持與維護計畫](https://demo.terry878.org/roomly/support.html)**
 
-![Roomly 展示版：以三十分鐘甘特圖顯示虛構會議](docs/images/board.jpg)
+公開版可使用真實 Google 帳號與日曆，各團隊自行建立獨立空間。GitHub Pages 是介紹頁，會連到上方完整服務；它本身不處理登入或會議資料。
 
-**[附截圖的操作教學](docs/SCREENSHOTS.md)** · **[自己發布 GitHub Pages](docs/DEPLOYMENT.md#github-pages發布展示版)** · **[部署真實日曆版本](docs/DEPLOYMENT.md#1-準備環境)**
+![目前公開版的 Google 登入入口，不含私人帳號或會議內容](docs/images/public-login.png)
+
+## 團隊怎麼開始？
+
+1. 使用自己的 Google 帳號登入，按「建立空間」，填入名稱與 Google 日曆邀請中的會議室地點。
+2. 到「空間設定」授權自己的日曆，需同意活動唯讀與日曆清單唯讀兩項權限。
+3. 管理員輸入成員的 Google Email，產生專用邀請連結，再自行將連結分享給對方。**不會自動寄 Email。**
+4. 對方用指定 Google 帳號登入，同意在這個空間分享符合地點的會議，並自行授權日曆。
+5. 按「同步會議」，取得所有空間成員的最新會議；展開「同步來源」可查看每個帳號是否授權、同步結果及最後成功時間。
+
+邀請只能由指定 Google Email 接受，有效 7 天。空間管理員可撤銷尚未接受的邀請或移除成員；每個帳號最多建立 3 個空間，每個空間最多 10 位成員，包含待接受的邀請。這些是服務資源上限，並非付費功能。
+
+建立與修改預約仍在 Google 日曆操作。請使用空間設定中的相同地點，然後回到 Roomly 按同步。管理員不能代替他人授權，也不能直接讀取他人的完整日曆。
+
+## 公開版只在你按同步時更新
+
+「同步會議」發出的 `POST /roomly/api/spaces/:id/sync` 是啟動 Google 日曆讀取的唯一入口。佇列只繼續處理這次明確要求的工作；單純登入、開啟看板、切換日期或查看來源狀態，只讀取後端已保存的資料。沒有定時補查、Google 變更通知或背景自動同步。
+
+同步成功時間只在完整取得並保存來源資料後更新，送入佇列不算成功。尚未授權、資料缺少或同步失敗會分別標示；未知時段不會被當作會議室空閒。新增、修改或取消會議後，請再按同步。
+
+**[公開版使用、授權及自架教學](docs/COMMUNITY.md)** 有完整說明。原本單團隊自架版的變更通知與定時補查仍保留在另一套部署模式，請見 [單團隊同步文件](docs/SHARED-CALENDAR.md)。
 
 ## 實際應用場景
 
-![使用情境示意：會議室門外的平板與成員手機共用預約看板](docs/images/use-cases.svg)
+![使用情境示意：會議室門外的平板與成員手機共用看板](docs/images/use-cases.svg)
 
-### 會議室門外：平板看目前預約
+- **會議室門外的平板**：開啟全螢幕，查看目前預約何時結束、下一場何時開始；需要時點會議或人物圓圈看詳細資料。
+- **辦公桌或外出的手機**：打開相同空間，查看今天與接下來幾天的空檔；將網站加入主畫面，可用 App（PWA）方式開啟。
 
-將平板固定在會議室外，用核准帳號登入後開啟全螢幕看板。走到門口時，可以直接查看這個時段有沒有預約、會議何時結束，以及下一場何時開始；需要時點選會議或人員圓圈查看詳細資訊。
+看板依日曆預約顯示使用狀況，不會感測現場是否有人；受邀者也不代表實際出席。空白只代表已成功同步的來源沒有相符預約，仍要留意來源授權與最後成功時間。
 
-### 辦公桌或外出時：手機 App 查空檔
+## 主要功能
 
-成員在自己的手機登入正式版，將網站加入主畫面，以 App（PWA）方式開啟。不必走到會議室門口，就能查看今天與接下來幾天的預約，找出合適的空白時段。需要預約時，在 Google 日曆建立會議並填入設定的會議室地點，同步後便會出現在共用看板。
+- 台北時間 09:00–19:00、每格 30 分鐘的五日甘特圖。
+- 今天高亮、目前時段置中、日期切換、跳過週末或台灣國定假日（內建 2026、2027 年）。
+- 點人物圓圈看姓名，點會議看受邀者與 Google Meet 連結。
+- 手機、平板與電腦排版，全螢幕及可安裝的 PWA。
+- 多個獨立空間、本人日曆授權、指定 Email 邀請、成員與授權狀態管理。
+- 手動同步所有空間成員可讀取日曆中符合地點的會議。
 
-例如：看板顯示 **14:00–15:00 已有預約、15:00–16:00 沒有預約、16:00 開始下一場會議**。門外的同事知道目前預約何時結束，遠端查看的同事則能評估 15:00–16:00 是否適合安排討論。這是虛構的使用例子。
+## Google 授權的目前限制
 
-看板的「使用狀況」依據日曆預約，並非現場人員感測。空白時段代表目前已同步來源中沒有符合地點的預約；受邀名單也不代表實際出席。
+公開服務的 Google 專案目前為 **Production**，日曆敏感權限仍未完成 Google 驗證。2026 年 10 月 14 日檢查時，Console 顯示已使用 **7／100** 個授權名額；實際剩餘名額以 Google Console 為準。基本 Google 登入與日曆授權是不同步驟，後者可能顯示未驗證警示或受到 Workspace 管理政策限制。
 
-## 團隊如何開始使用
+這不是付費造成的限制，打賞也不會解除 Google 的授權上限。公開服務與公司服務的資料庫、登入及日曆憑證分開，但若使用同一個 Google Cloud 專案，Google 的專案授權上限仍共用。Production 不等於通過驗證，也不代表可以無限新增日曆授權帳號。[Google Audience 與 OAuth user cap 說明](https://support.google.com/cloud/answer/15549945?hl=en)
 
-![同步流程示意：成員授權 Google 日曆，Roomly 依地點彙整，再提供平板與手機查看](docs/images/calendar-flow.svg)
+## 支持 Roomly
 
-1. **管理員設定一次**：部署正式版、設定共用會議室地點，並將成員加入網站白名單。
-2. **成員首次登入與授權**：每位成員以自己的 Google 帳號登入，同意必要的日曆唯讀權限。
-3. **繼續在 Google 日曆預約**：新增或修改會議時，使用設定的會議室地點。Roomly 自動同步並彙整符合地點的預約。
-4. **平板與手機查看同一看板**：平板放在門外全螢幕顯示，手機可加入主畫面查空檔；也能用上方同步按鈕手動更新。
+免費公開版以手動同步降低雲端用量。即時同步需要持續運作的通知、背景工作、資料庫與維護成本；若未來獲得支持，將評估開放更多功能，時間與內容會另行公告。
 
-上述流程適用於部署完整後端的正式版。GitHub Pages 提供虛構資料展示，方便先試用介面；手機 App 是可安裝的網頁（PWA），無須到 App Store 下載。
+[支持頁](https://demo.terry878.org/roomly/support.html)目前只有維護計畫說明，**尚未準備收款連結，沒有付款、打賞收款或立即解鎖功能**。
 
-## 可以做什麼
+## 選擇使用方式
 
-- 台北時區 09:00–19:00，每格 30 分鐘的多日甘特圖。
-- 日期切換、今天高亮、目前時段置中、跳過週末或台灣國定假日（內建 2026、2027 年資料）。
-- 點人物圓圈查看姓名，點預約查看受邀者與 Google Meet 連結。
-- 全螢幕預覽、手機與平板排版；正式版支援安裝為 PWA。
-- 正式版匯入每位核准成員的主要日曆及可讀取的共用日曆，以管理員設定的地點篩選。
-- 白名單管理、各帳號授權狀態、手動同步、Google 變更通知及背景補查。
-- 管理員可在「設定」選擇 10／15／30／60 分鐘補查，所有裝置共用；變更通知與手動同步仍保留。
-
-Roomly 顯示 Google 日曆中的預約；建立或修改預約仍在 Google 日曆操作。受邀者名單不代表實際出席人員。
-
-## 先選擇使用方式
-
-| 方式 | 適合用途 | Google / Cloudflare 設定 | 真實共用資料 |
+| 方式 | 適合用途 | 真實會議資料 | 教學 |
 | --- | --- | --- | --- |
-| 線上展示或 `npm run demo` | 看介面、試觸控操作、分享作品 | 不需要 | 無，只有虛構範例 |
-| `npm run dev` | 本機開發登入、白名單和日曆功能 | 自己的 Google OAuth；本機 D1 | 只存在本機資料庫 |
-| Cloudflare Workers + D1 | 團隊正式使用，關閉網頁也能同步 | 自己的 Google OAuth、Cloudflare 與部署網址 | 核准成員共用同一看板 |
+| 免費公開服務 | 小團隊直接使用自己的 Google 帳號與日曆 | 空間成員共用，手動同步 | [公開版說明](docs/COMMUNITY.md#直接使用公開服務) |
+| 自架多團隊版 | 用自己的 Google 專案與 Cloudflare 提供獨立空間 | 自己的 D1，手動同步 | [本機](docs/COMMUNITY.md#本機開發多團隊版)／[雲端](docs/COMMUNITY.md#部署多團隊版到-cloudflare) |
+| 單團隊／公司自架版 | 一份白名單、一間會議室、背景更新 | 自己的 D1，自動與手動同步 | [另一模式的部署教學](docs/DEPLOYMENT.md#單團隊公司自架模式) |
+| `npm run demo` | 純介面與觸控展示 | 全部虛構，不登入、不同步 | [操作截圖](docs/SCREENSHOTS.md) |
+| GitHub Pages | 介紹產品並連到完整服務 | Pages 不處理資料 | [發布入口頁](docs/DEPLOYMENT.md#github-pages發布入口頁) |
 
-GitHub Pages 只能放展示版。要使用真實 Google 日曆，請部署完整 Worker 後端。
+## 本機快速開始
 
-## 本機快速看展示
-
-需要 Node.js 24 或更新版本與 npm。以下指令在專案資料夾執行：
+需要 Node.js 24 或更新版本與 npm，在專案資料夾執行：
 
 ```sh
 git clone https://github.com/terry-eric/roomly.git
 cd roomly
 npm ci
+```
+
+只看獨立的虛構介面展示：
+
+```sh
 npm run demo
 ```
 
-開啟 [http://127.0.0.1:4173](http://127.0.0.1:4173)。範例資料由本機產生，重新載入不會同步任何真實帳號。結束時在終端機按 `Ctrl+C`。
+開啟 [http://127.0.0.1:4173](http://127.0.0.1:4173)。這不會讀取真實帳號或日曆。`npm run build:demo` 產生 `demo-dist/`，與 GitHub Pages 的 `pages-dist/` 分開。
 
-只要產生可放到靜態網站的展示檔案：
-
-```sh
-npm run build:demo
-```
-
-輸出在 `demo-dist/`。GitHub Pages 工作流程發布這個資料夾，正式版的 `dist/` 不適合直接當作無後端展示使用。
-
-同一個 Wi-Fi 的手機或平板要查看本機範例，可明確開啟區域網路預覽：
+要測試真實多團隊流程，先依 [多團隊本機教學](docs/COMMUNITY.md#本機開發多團隊版)設定自己的 OAuth 與 `.dev.vars`，再執行：
 
 ```sh
-npm run demo -- --host 0.0.0.0
+npm run dev:community
 ```
 
-在手機輸入 `http://<電腦的區域網路IP>:4173/`，並允許作業系統的區域網路連線。這個指令只分享虛構展示資料。
+入口是 [http://localhost:3000/roomly/](http://localhost:3000/roomly/)。這會建置 `community-dist/`、套用 `migrations-community/` 並啟動本機 Worker；不會部署到雲端。
 
-## 本機與雲端完整版
+![獨立虛構展示的介面示意，並非公開服務的真實會議](docs/images/board.jpg)
 
-請依序閱讀 **[安裝與部署](docs/DEPLOYMENT.md)**，完成 Google OAuth、自己的管理員帳號及密鑰設定，再執行：
-
-```sh
-npm run dev
-```
-
-本機入口是 [http://localhost:3000/roomly/](http://localhost:3000/roomly/)。這個指令會建立正式版靜態檔、套用本機資料庫 migrations，再啟動 Worker；它不會部署到雲端。
-
-一般成員不需要設定 Client ID 或密鑰。核准成員登入後，缺少必要日曆權限時，網站會接著請本人同意兩項唯讀權限。加入白名單不能代替 Google 授權，也不能讓管理員直接讀取尚未授權的帳號。
-
-**[共用日曆與同步方式](docs/SHARED-CALENDAR.md)** 說明來源、地點篩選、撤銷授權及同步時間。
+上圖與 [操作截圖](docs/SCREENSHOTS.md)來自 `npm run demo`，會議、人物和地點全部虛構；它們示範共用甘特圖操作，並非新公開版的空間管理畫面。
 
 ## 開發指令
 
 | 指令 | 用途 |
 | --- | --- |
-| `npm ci` | 依鎖定版本安裝相依套件 |
-| `npm run demo` | 開啟純範例展示伺服器 |
-| `npm run build:demo` | 產生 `demo-dist/` 展示版 |
-| `npm run dev` | 建置、初始化本機 D1 並啟動完整 Worker |
-| `npm run db:local` | 套用本機 migrations |
-| `npm run db:remote` | 套用設定中的雲端 D1 migrations |
-| `npm test` | 執行前後端測試 |
-| `npm run typecheck` | 檢查 TypeScript |
-| `npm run build` | 產生 Worker 使用的 `dist/roomly/` |
-| `npm run check:deploy` | 建置並執行部署 dry run |
-| `npm run deploy` | 建置並部署到自己的 Cloudflare 帳號 |
+| `npm ci` | 安裝鎖定的相依套件 |
+| `npm run dev:community` | 建置與啟動多團隊本機服務 |
+| `npm run db:community:local` | 套用多團隊本機 D1 migrations |
+| `npm run db:community:remote` | 套用自己設定的多團隊雲端 D1 migrations |
+| `npm run build:community` | 產生多團隊 `community-dist/roomly/` |
+| `npm run check:community` | 建置並檢查本機設定的 Worker dry run，不部署 |
+| `npm run deploy:community` | 建置並依自己的 `wrangler.community.jsonc` 部署 |
+| `npm run build:pages` | 產生 GitHub Pages 入口頁 `pages-dist/` |
+| `npm run demo`／`npm run build:demo` | 另行啟動／建置虛構展示 |
+| `npm test`／`npm run typecheck` | 測試與 TypeScript 檢查 |
+| `npm run dev`／`npm run deploy` | 舊單團隊模式，本機／雲端部署 |
 
-前端是 HTML、CSS 與 JavaScript；後端是 TypeScript Cloudflare Worker，使用 D1 儲存登入、白名單、加密日曆授權和符合地點的會議快取。`migrations/` 會逐版建立資料表。
+公開多團隊版使用 `src/community/`、`PUBLIC_DB` 與 `PUBLIC_SYNC_QUEUE`；舊單團隊版使用 `src/worker.ts`、`DB` 與另一套 migrations。勿將兩種部署的資料庫、加密金鑰或授權資料混用。
 
-`.dev.vars.example` 只提供設定欄位。本機 `.dev.vars`、OAuth Client Secret、加密金鑰、資料庫匯出與真實會議資料都不應加入 Git。本公開版本不附帶任何可使用的私人帳號或密鑰。
-
-Google 的 Testing、正式發布與敏感權限驗證是不同設定；發布這份程式碼不會讓自己的 Google 專案自動通過驗證。部署文件附有各項官方說明。
+`.dev.vars`、`wrangler.community.jsonc`、真實 Client Secret、加密金鑰、登入資料及資料庫匯出均不得加入 Git。Repository 只有一般設定範例，不提供可使用的私人帳號或密鑰。自架者需配置自己的 Google 專案、網域與隱私說明，發布程式碼不等於通過 Google 驗證。

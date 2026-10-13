@@ -1,0 +1,11 @@
+{
+  "name": "roomly-community-local",
+  "main": "src/community/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {"PUBLIC_APP_ORIGIN": "http://localhost:3000", "GOOGLE_CLIENT_ID": "YOUR_CLIENT_ID.apps.googleusercontent.com"},
+  "assets": {"directory": "./community-dist", "binding": "ASSETS", "run_worker_first": true, "html_handling": "none", "not_found_handling": "none"},
+  "d1_databases": [{"binding": "PUBLIC_DB", "database_name": "roomly-community", "database_id": "00000000-0000-0000-0000-000000000003", "migrations_dir": "migrations-community"}],
+  "queues": {"producers": [{"binding": "PUBLIC_SYNC_QUEUE", "queue": "roomly-community-sync"}], "consumers": [{"queue": "roomly-community-sync", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 6, "retry_delay": 30}]},
+  "triggers": {"crons": []}
+}

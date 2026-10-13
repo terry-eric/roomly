@@ -1,0 +1,10 @@
+<section class="community-space-bar" aria-label="我的共用空間">
+  <div><p class="eyebrow">YOUR SHARED SPACE</p><h1 id="space-heading">我的共用空間</h1><p id="location-label" class="muted"></p></div>
+  <div class="space-picker-controls"><label class="sr-only" for="space-picker">選擇共用空間</label><select id="space-picker"><option value="">選擇共用空間</option></select><button id="create-space" class="primary" type="button">＋ 建立空間</button></div>
+</section>
+<p id="empty-spaces" class="empty-spaces" hidden>先建立一個空間，再邀請朋友或同事加入。每人使用自己的 Google 帳號，並自行授權日曆。</p>
+<p id="community-error" class="community-error" role="alert" hidden></p>
+<section id="join-invite" class="community-panel invitation-join" hidden>
+  <p class="eyebrow">YOU'RE INVITED</p><h2>加入「<span id="join-space-name"></span>」</h2><p>這份邀請指定給 <strong id="join-email"></strong>。</p><p id="join-help"></p>
+  <form id="join-form"><label class="consent"><input id="join-consent" type="checkbox" required>我同意將自己日曆中符合這個空間地點的會議，在此空間與成員分享。授權可隨時移除。</label><div class="button-row"><button id="join-accept" class="primary" type="submit">同意並加入</button><button id="join-cancel" class="quiet outlined" type="button">取消邀請</button></div></form>
+</section>

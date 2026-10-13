@@ -1,21 +1,29 @@
-# 安裝與部署
+# 安裝與部署：入口頁與單團隊模式
 
-這份文件用來建立**自己的 Roomly**。範例中的 `roomly.example.com`、Email、Client ID 與資料庫 ID 都必須換成自己的設定。GitHub Pages 展示版不需要以下步驟。
+一般使用者可直接前往 [免費公開服務](https://demo.terry878.org/roomly/)，用 Google 登入建立自己的空間。要自行架設目前的多團隊手動同步版，請使用 **[多團隊本機與 Cloudflare 教學](COMMUNITY.md)**，而非本頁下方的舊 `npm run dev`／`npm run deploy` 指令。
 
-## GitHub Pages：發布展示版
+本頁保留兩部分：GitHub Pages **入口介紹頁**的發布方式，以及原本**單團隊／公司自架模式**的完整部署說明。下方單團隊模式的白名單、推播與補查，不是公開多團隊版的行為。所有 `roomly.example.com`、Email、Client ID 與資料庫 ID 都是需替換的範例。
 
-若只想分享可操作的畫面，使用 GitHub Pages 即可，不需要 Google OAuth、Cloudflare 或 secrets。
+## GitHub Pages：發布入口頁
+
+GitHub Pages 只發布 Roomly 的介紹與入口，按「開始使用」會連到完整 Worker 服務。Pages 本身不讀取真實日曆、不處理登入，亦不再提供虛構會議看板。
 
 1. 在 GitHub 開啟 [Roomly repository](https://github.com/terry-eric/roomly)，按 **Fork** 建立自己的公開 repository。
 2. 在自己的 repository 開啟 **Settings → Pages**，將 **Build and deployment → Source** 設為 **GitHub Actions**。
-3. 專案已附 `.github/workflows/pages.yml`，不必再選頁面下方的 Jekyll 或 Static HTML 範本。到 **Actions**，在 fork 中啟用工作流程後，選 **Deploy demo to GitHub Pages → Run workflow**，使用 `main` 分支執行。
-4. 等 `build` 和 `deploy` 完成，開啟該 workflow 的部署連結，或回 **Settings → Pages** 找到網站網址。一般為 `https://<自己的GitHub帳號>.github.io/roomly/`。
+3. 專案已附 `.github/workflows/pages.yml`，不必再選 Jekyll 或 Static HTML 範本。到 **Actions**，在 fork 中啟用工作流程後，選 **Deploy public Roomly entry to GitHub Pages → Run workflow**，使用 `main` 分支執行。
+4. 等 `build` 和 `deploy` 完成，開啟 workflow 的部署連結，或回 **Settings → Pages** 找網站網址；一般為 `https://<自己的GitHub帳號>.github.io/roomly/`。
 
-![實際 Roomly repository 的 Pages 設定，Source 選擇 GitHub Actions](images/github-pages.jpg)
+![舊版 repository Pages 設定截圖，僅示範 Source 選擇 GitHub Actions 的位置](images/github-pages.jpg)
 
-圖中的 `terry-eric/roomly` 是本專案範例；操作時使用自己的 repository。之後推送到 `main` 會重新發布。Workflow 執行 `npm ci` 和 `npm run build:demo`，只上傳 `demo-dist/`，所有 assets 使用相對路徑，支援 repository 子路徑。
+圖中的 `terry-eric/roomly` 是本專案範例；操作時使用自己的 repository。這是舊版截圖，僅示範 Pages 設定位置，並非目前入口頁。之後推送到 `main` 會重新發布。Workflow 執行 `npm ci` 和 `npm run build:pages`，只上傳 `pages-dist/`；assets 使用相對路徑，支援 repository 子路徑。
 
-GitHub Pages 上是公開的虛構資料展示，Google 登入、白名單、日曆同步和 Email 都沒有啟用。要供團隊使用真實資料，接著完成下方的完整後端部署。[GitHub 官方 Pages 設定](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site)
+若自架完整服務，先將 `community/pages.html` 中所有 `https://demo.terry878.org/roomly/` 開頭的服務連結改為自己的 HTTPS 網域，保留 `/roomly/` 與說明頁路徑。帶 `data-service-entry` 的主入口需一致，支持與隱私頁也要使用相同 origin；然後執行 `npm run build:pages`。本機純虛構看板仍可用 `npm run demo`／`npm run build:demo` 單獨操作，輸出 `demo-dist/`；目前的 Pages workflow 不會發布該資料夾。[GitHub 官方 Pages 設定](https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site)
+
+## 單團隊／公司自架模式
+
+以下步驟使用 `src/worker.ts`、`wrangler.jsonc`／`wrangler.local.jsonc`、`DB` 與 `migrations/`，適合一份管理員白名單、一個共用地點，並需要 Google 變更通知與自動補查的部署。它與 `src/community/` 的多團隊、Email 專用邀請及純手動同步分開。
+
+若想讓每個人自行建立獨立空間，請改用 [COMMUNITY.md](COMMUNITY.md)，其中使用 `wrangler.community.*.jsonc`、`PUBLIC_DB`、`PUBLIC_SYNC_QUEUE` 與 `migrations-community/`。勿將兩種模式套用到同一份資料庫。
 
 ## 1. 準備環境
 

@@ -1,9 +1,13 @@
 node_modules/
 dist/
 demo-dist/
+community-dist/
+pages-dist/
+wrangler.community.jsonc
 .wrangler/
 .dev.vars*
 !.dev.vars.example
+!.dev.vars.community.example
 .env*
 *.log
 *.sqlite

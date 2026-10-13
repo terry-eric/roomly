@@ -1,4 +1,4 @@
-name: Deploy demo to GitHub Pages
+name: Deploy public Roomly entry to GitHub Pages
 on:
   push:
     branches: [main]
@@ -20,11 +20,11 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run build:demo
+      - run: npm run build:pages
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
-          path: demo-dist
+          path: pages-dist
   deploy:
     needs: build
     runs-on: ubuntu-latest
